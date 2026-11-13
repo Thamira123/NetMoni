@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Client } from '@stomp/stompjs'
 import {
   Activity, AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight, Bell,
@@ -10,7 +10,7 @@ import { ApiError, request, webSocketUrl } from './services/api'
 import './App.css'
 
 type Role = 'ADMIN' | 'OPERATOR' | 'VIEWER'
-type ViewKey = 'overview' | 'devices' | 'agents' | 'monitoring' | 'alerts' | 'reports' | 'device-detail' | 'agent-detail'
+type ViewKey = 'overview' | 'devices' | 'agents' | 'network-discovery' | 'monitoring' | 'alerts' | 'reports' | 'device-detail' | 'agent-detail'
 
 interface AuthSession { accessToken: string; username: string; role: Role; expiresAt?: string }
 interface Page<T> { content: T[]; totalElements: number }
@@ -29,10 +29,13 @@ interface Device {
   deviceId: string; name: string; ipAddress: string; hostname: string | null
   deviceType: string; location: string | null; agentId: string
   status: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'; monitoringEnabled: boolean; updatedAt: string
+  networkCidr?: string | null; interfaceName?: string | null; macAddress?: string | null; lastSeenAt?: string | null
 }
+interface NetworkInfo { networkId:string; agentId:string; agentName:string; agentStatus:Agent['status']; interfaceName:string; displayName:string|null; interfaceType:string; interfaceStatus:string; address:string|null; cidr:string; subnetMask:string|null; broadcastAddress:string|null; gateway:string|null; macAddress:string|null; ipv6Address:string|null; ipv6PrefixLength:number|null; authorized:boolean; scanEligible:boolean; lastDetectedAt:string; deviceCount:number; lastScanAt:string|null }
 interface Agent {
   agentId: string; name: string; segmentCidr: string; version: string
   status: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'; registeredAt: string; lastHeartbeat: string | null
+  authorizedCidrs?: string[]
 }
 interface Alert {
   alertId: string; type: string; severity: 'CRITICAL' | 'WARNING' | 'INFO'
@@ -48,6 +51,7 @@ const navItems: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] 
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
   { key: 'devices', label: 'Devices', icon: Router },
   { key: 'agents', label: 'Agents', icon: RadioTower },
+  { key: 'network-discovery', label: 'Network discovery', icon: Network },
   { key: 'monitoring', label: 'Monitoring', icon: Activity },
   { key: 'alerts', label: 'Alerts', icon: Bell },
   { key: 'reports', label: 'Reports', icon: Gauge },
@@ -105,8 +109,10 @@ function App() {
   const [live, setLive] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [authNotice, setAuthNotice] = useState('')
   const [search, setSearch] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [discoveryRevision, setDiscoveryRevision] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [devicePageNumber, setDevicePageNumber] = useState(0)
   const [agentPageNumber, setAgentPageNumber] = useState(0)
@@ -120,6 +126,11 @@ function App() {
   const [detailResults, setDetailResults] = useState<MonitoringResult[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
 
+  const expireSession = useCallback(() => {
+    sessionStorage.removeItem('netmoni-session')
+    setSession(null); setSnapshot(null); setAuthNotice('Your session expired or is no longer valid. Sign in again to load network discovery.')
+  }, [])
+
   useEffect(() => {
     if (!session) return
     let active = true
@@ -131,8 +142,7 @@ function App() {
         if (active) { setSnapshot(next); setError('') }
       } catch (reason) {
         if (active && reason instanceof ApiError && reason.status === 401) {
-          sessionStorage.removeItem('netmoni-session')
-          setSession(null); setSnapshot(null); setError('Your session expired. Sign in again.')
+          expireSession()
         } else if (active) setError(reason instanceof Error ? reason.message : 'Unable to reach the API')
       } finally { if (active) setLoading(false) }
     }
@@ -145,9 +155,9 @@ function App() {
       heartbeatOutgoing: 10000,
       onConnect: () => {
         setLive(true)
-        for (const topic of ['/topic/dashboard', '/topic/devices', '/topic/monitoring', '/topic/alerts', '/topic/agents']) {
-          client.subscribe(topic, () => void synchronize())
-        }
+        for (const topic of ['/topic/dashboard', '/topic/devices', '/topic/monitoring', '/topic/alerts', '/topic/agents']) client.subscribe(topic, () => void synchronize())
+        client.subscribe('/topic/discovery', () => { setDiscoveryRevision(value => value + 1); void synchronize() })
+        client.subscribe('/topic/networks', () => { setDiscoveryRevision(value => value + 1); void synchronize() })
       },
       onWebSocketClose: () => setLive(false),
       onStompError: () => setLive(false),
@@ -207,14 +217,14 @@ function App() {
     finally { setDetailLoading(false) }
   }
 
-  if (!session) return <AuthScreen onAuthenticated={setSession} />
+  if (!session) return <AuthScreen notice={authNotice} onAuthenticated={(next) => { setAuthNotice(''); setSession(next) }} />
   const summary = snapshot?.summary
   const title = navItems.find((item) => item.key === view)?.label
     ?? (view === 'device-detail' ? 'Device details' : view === 'agent-detail' ? 'Agent details' : 'Overview')
   const unreadAlerts = (snapshot?.alerts ?? []).filter((alert) => alert.status === 'UNREAD')
   const overviewSnapshot = snapshot ? { ...snapshot, alerts: unreadAlerts } : null
   const matchingDevices = (snapshot?.devices ?? []).filter((device) =>
-    `${device.name} ${device.ipAddress} ${device.hostname ?? ''} ${device.location ?? ''}`.toLowerCase().includes(search.toLowerCase()),
+    `${device.name} ${device.ipAddress} ${device.hostname ?? ''} ${device.macAddress ?? ''} ${device.networkCidr ?? ''} ${device.location ?? ''}`.toLowerCase().includes(search.toLowerCase()),
   )
   const matchingAgents = (snapshot?.agents ?? []).filter((agent) =>
     `${agent.name} ${agent.agentId} ${agent.segmentCidr} ${agent.version}`.toLowerCase().includes(search.toLowerCase()),
@@ -245,8 +255,9 @@ function App() {
         {view === 'devices' && <label className="search-box page-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search devices" aria-label="Search devices" /></label>}
         {view === 'agents' && <label className="search-box page-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search agents" aria-label="Search agents" /></label>}
         {snapshot && view === 'overview' && overviewSnapshot && <Overview summary={summary} snapshot={overviewSnapshot} onNavigate={setView} onAlertAction={updateAlert} />}
-        {snapshot && view === 'devices' && <DevicesView devices={matchingDevices} total={snapshot.deviceTotal} page={devicePageNumber} onPageChange={setDevicePageNumber} canManage={session.role !== 'VIEWER'} canDelete={session.role === 'ADMIN'} agents={snapshot.agents} onOpenDevice={openDevice} onOpenAgent={openAgent} token={session.accessToken} onChanged={() => setRefreshKey((key) => key + 1)} onError={setError} />}
-        {snapshot && view === 'agents' && <AgentsView agents={matchingAgents} total={snapshot.agentTotal} page={agentPageNumber} onPageChange={setAgentPageNumber} onOpenAgent={openAgent} />}
+        {snapshot && view === 'devices' && <DevicesView devices={matchingDevices} total={snapshot.deviceTotal} page={devicePageNumber} onPageChange={setDevicePageNumber} canManage={session.role !== 'VIEWER'} canDelete={session.role === 'ADMIN'} agents={snapshot.agents} onOpenDevice={openDevice} onOpenAgent={openAgent} onNavigate={setView} token={session.accessToken} onChanged={() => setRefreshKey((key) => key + 1)} onError={setError} />}
+        {snapshot && view === 'agents' && <AgentsView agents={matchingAgents} total={snapshot.agentTotal} page={agentPageNumber} onPageChange={setAgentPageNumber} onOpenAgent={openAgent} token={session.accessToken} onNavigate={setView} />}
+        {snapshot && view === 'network-discovery' && <NetworkDiscoveryView agents={snapshot.agents} token={session.accessToken} canManage={session.role !== 'VIEWER'} isAdmin={session.role==='ADMIN'} revision={discoveryRevision} onError={setError} onUnauthorized={expireSession} />}
         {snapshot && view === 'monitoring' && <MonitoringView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} onOpenDevice={openDevice} />}
         {snapshot && view === 'alerts' && <AlertsView alerts={snapshot.alerts} total={snapshot.alertTotal} page={alertPageNumber} onPageChange={setAlertPageNumber} onAlertAction={updateAlert} canResolve={session.role !== 'VIEWER'} />}
         {snapshot && view === 'reports' && <ReportsView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} />}
@@ -263,6 +274,7 @@ function pageDescription(view: ViewKey) {
     overview: 'A clear view of your infrastructure, all in one place.',
     devices: 'Every monitored endpoint across your network.',
     agents: 'Collectors reporting into your monitoring network.',
+    'network-discovery': 'Inspect authorized interface networks, scan selected subnets, and track device registration live.',
     monitoring: 'Recent checks and results received from monitoring agents.',
     alerts: 'Events that need a closer look from your team.',
     reports: 'Availability and response trends from real monitoring results.',
@@ -272,7 +284,7 @@ function pageDescription(view: ViewKey) {
   return descriptions[view]
 }
 
-function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
+function AuthScreen({ onAuthenticated, notice }: { onAuthenticated: (session: AuthSession) => void; notice?: string }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -297,7 +309,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSessio
     <div className="auth-topline"><div className="brand-mark"><Network size={20} strokeWidth={2.2} /></div><span>NETMONI <i>/</i> NETWORK INTELLIGENCE</span><span className="auth-region"><span className="footer-dot" /> LOCAL INSTANCE</span></div>
     <div className="auth-layout">
       <section className="auth-story"><div className="auth-story-label"><span className="status-pulse" /> MONITORING CONSOLE</div><h1>Network<br /><em>monitoring.</em></h1><div className="auth-edition">DISTRIBUTED NETWORK OPERATIONS</div><div className="signal-visual" aria-hidden="true"><div className="signal-grid" /><div className="signal-node signal-node-a"><span /><i>EDGE / 01</i></div><div className="signal-node signal-node-b"><span /><i>CORE / 02</i></div><div className="signal-node signal-node-c"><span /><i>FIELD / 03</i></div><div className="signal-path signal-path-a" /><div className="signal-path signal-path-b" /><div className="signal-center"><Network size={22} /><span>NETMONI</span></div><div className="signal-coordinates">06.9271 N<br />79.8612 E</div></div><div className="auth-proof"><span><ShieldCheck size={16} /> SESSION-BASED ACCESS</span><span>LOCAL INSTANCE</span></div></section>
-      <section className="auth-panel"><div className="auth-panel-kicker">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</div><h2>{mode === 'login' ? 'Sign in to NetMoni' : 'Create your account'}</h2><p>{mode === 'login' ? 'Use your network operations account to continue.' : 'New accounts are created with viewer access.'}</p>
+      <section className="auth-panel"><div className="auth-panel-kicker">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</div><h2>{mode === 'login' ? 'Sign in to NetMoni' : 'Create your account'}</h2><p>{mode === 'login' ? 'Use your network operations account to continue.' : 'New accounts are created with viewer access.'}</p>{notice&&<div className="auth-error" role="alert"><AlertTriangle size={15}/>{notice}</div>}
         <div className="auth-tabs" role="tablist" aria-label="Authentication mode"><button className={mode === 'login' ? 'auth-tab-active' : ''} onClick={() => { setMode('login'); setError('') }} role="tab" aria-selected={mode === 'login'}>Sign in</button><button className={mode === 'register' ? 'auth-tab-active' : ''} onClick={() => { setMode('register'); setError('') }} role="tab" aria-selected={mode === 'register'}>Create account</button></div>
         <form onSubmit={submit} className="auth-form"><label className="field-label" htmlFor="username">Email or username</label><input id="username" className="text-input" type={mode === 'register' ? 'email' : 'text'} maxLength={254} autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="you@company.com" required /><div className="password-label-row"><label className="field-label" htmlFor="password">Password</label>{mode === 'register' && <small>10–72 characters</small>}</div><div className="password-field"><input id="password" className="text-input" type={visible ? 'text' : 'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 10 : undefined} maxLength={72} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required /><button type="button" className="icon-button password-toggle" onClick={() => setVisible((value) => !value)} aria-label={visible ? 'Hide password' : 'Show password'}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>{error && <div className="auth-error" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button button-primary auth-submit" type="submit" disabled={busy}>{busy ? <RefreshCw size={16} className="spinning" /> : <span>{mode === 'login' ? 'Continue to dashboard' : 'Create account'}</span>}{!busy && <ArrowRight size={16} />}</button></form>
         <div className="auth-footnote"><ShieldCheck size={15} /><span>Secure session · Tokens stay in this browser session</span></div>
@@ -371,30 +383,74 @@ function MonitoringTable({ results, devices }: { results: MonitoringResult[]; de
     return <tr key={result.resultId}><td><span className="table-device"><span className="table-device-icon"><Cpu size={15} /></span><span><strong>{device?.name ?? 'Unknown device'}</strong><small>{device?.ipAddress ?? result.deviceId.slice(0, 8)}</small></span></span></td><td><span className="check-type">{result.checkType}</span></td><td><StatusBadge status={result.available ? 'ONLINE' : 'OFFLINE'} /></td><td className="latency-cell">{result.responseTimeMs == null ? '--' : `${result.responseTimeMs} ms`}</td><td className="time-cell">{formatRelative(result.checkedAt)}</td></tr>
   })}</tbody></table></div>
 }
-function DevicesView({ devices, total, page, onPageChange, canManage, canDelete, agents, onOpenDevice, onOpenAgent, token, onChanged, onError }: {
+interface Scan { scanId:string; agentId:string; networkId:string|null; networkCidr:string; status:'QUEUED'|'RUNNING'|'COMPLETED'|'FAILED'; progress:number; checked:number; discovered:number; failed:number; newDevices:number; existingDevices:number; createdAt:string; startedAt:string|null; finishedAt:string|null; durationMs:number|null; errorMessage:string|null }
+function NetworkDiscoveryView({ agents, token, canManage, isAdmin, revision, onError, onUnauthorized }: { agents: Agent[]; token: string; canManage: boolean; isAdmin:boolean; revision:number; onError: (message:string)=>void; onUnauthorized:()=>void }) {
+  const [agentId,setAgentId]=useState('ALL')
+  const [networks,setNetworks]=useState<NetworkInfo[]>([]); const [jobs,setJobs]=useState<Scan[]>([]); const [devices,setDevices]=useState<Device[]>([])
+  const [search,setSearch]=useState(''); const [typeFilter,setTypeFilter]=useState('ALL'); const [interfaceStatusFilter,setInterfaceStatusFilter]=useState('ALL'); const [selectedIds,setSelectedIds]=useState<string[]>([]); const [page,setPage]=useState(0); const [busy,setBusy]=useState(false); const [networkRefreshKey,setNetworkRefreshKey]=useState(0)
+  const [allowedText,setAllowedText]=useState(''); const [savingAllowed,setSavingAllowed]=useState(false)
+  const selected=agentId==='ALL'?null:agents.find(a=>a.agentId===agentId)
+  useEffect(()=>{const target=agentId==='ALL'?null:agents.find(a=>a.agentId===agentId);setAllowedText((target?.authorizedCidrs??[target?.segmentCidr??'']).join('\n'))},[agentId,agents])
+  const active=jobs.some(s=>s.status==='QUEUED'||s.status==='RUNNING')
+  const agentNetworks=networks.filter(n=>agentId==='ALL'||n.agentId===agentId)
+  useEffect(()=>{let alive=true;const refresh=async()=>{try{const listAll=await request<NetworkInfo[]>('/discovery/networks',token);const list=Array.isArray(listAll)?listAll:[];const selectedAgents=agents.filter(a=>agentId==='ALL'||a.agentId===agentId);const [deviceLists,scanLists]=await Promise.all([Promise.all(selectedAgents.map(a=>request<Device[]>(`/discovery/agents/${a.agentId}/devices`,token))),Promise.all(selectedAgents.map(a=>request<Scan[]>(`/discovery/agents/${a.agentId}/scans`,token)))]);if(alive){setNetworks(list);setDevices(deviceLists.flatMap(d=>Array.isArray(d)?d:[]));setJobs(scanLists.flatMap(s=>Array.isArray(s)?s:[]).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)));setSelectedIds(ids=>ids.filter(id=>list.some(n=>n.networkId===id&&(agentId==='ALL'||n.agentId===agentId)&&n.scanEligible&&n.agentStatus==='ONLINE')))}}catch(e){if(alive&&e instanceof ApiError&&e.status===401)onUnauthorized();else if(alive)onError(e instanceof Error?e.message:'Unable to load discovery data')}};void refresh();const timer=window.setInterval(()=>void refresh(),active?1800:20000);return()=>{alive=false;window.clearInterval(timer)}},[agents,agentId,token,active,revision,onError,onUnauthorized,networkRefreshKey])
+  async function start(ids=selectedIds){if(!ids.length)return;setBusy(true);try{const next=await request<Scan[]>('/discovery/scan',token,{method:'POST',body:JSON.stringify({networkIds:ids})});setJobs(current=>[...next,...current].slice(0,20))}catch(e){onError(e instanceof Error?e.message:'Unable to start scan')}finally{setBusy(false)}}
+  async function saveAuthorizedCidrs(){if(agentId==='ALL')return;setSavingAllowed(true);try{await request(`/agents/${agentId}/authorized-cidrs`,token,{method:'PUT',body:JSON.stringify({cidrs:allowedText.split(/[\s,;]+/).map(v=>v.trim()).filter(Boolean)})});setNetworkRefreshKey(k=>k+1)}catch(e){onError(e instanceof Error?e.message:'Unable to update authorized networks')}finally{setSavingAllowed(false)}}
+  function toggle(id:string){setSelectedIds(current=>current.includes(id)?current.filter(x=>x!==id):[...current,id])}
+  const eligible=agentNetworks.filter(n=>n.scanEligible&&n.agentStatus==='ONLINE')
+  const filteredNetworks=agentNetworks.filter(n=>`${n.agentName} ${n.interfaceName} ${n.displayName??''} ${n.cidr} ${n.gateway??''}`.toLowerCase().includes(search.toLowerCase())&&(typeFilter==='ALL'||n.interfaceType===typeFilter)&&(interfaceStatusFilter==='ALL'||n.interfaceStatus===interfaceStatusFilter))
+  const latest=jobs[0]; const activeJobs=jobs.filter(s=>s.status==='QUEUED'||s.status==='RUNNING'); const currentJobs=activeJobs.length?activeJobs:(latest?[latest]:[])
+  const aggregate=currentJobs.length?{status:activeJobs.length?(activeJobs.some(s=>s.status==='RUNNING')?'RUNNING':'QUEUED'):latest?.status,progress:activeJobs.length?Math.round(activeJobs.reduce((sum,s)=>sum+s.progress,0)/activeJobs.length):latest?.progress,checked:currentJobs.reduce((n,s)=>n+s.checked,0),discovered:currentJobs.reduce((n,s)=>n+s.discovered,0),failed:currentJobs.reduce((n,s)=>n+s.failed,0),newDevices:currentJobs.reduce((n,s)=>n+s.newDevices,0),existingDevices:currentJobs.reduce((n,s)=>n+s.existingDevices,0),durationMs:currentJobs.reduce((n,s)=>n+(s.durationMs??0),0)}:undefined
+  const matching=devices.filter(d=>`${d.name} ${d.ipAddress} ${d.hostname??''} ${d.macAddress??''} ${d.networkCidr??''} ${d.status}`.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>a.ipAddress.localeCompare(b.ipAddress,undefined,{numeric:true}))
+  const visible=matching.slice(page*10,page*10+10)
+  return <div className="discovery-view">
+    <section className="panel discovery-controls"><div><span className="panel-kicker">AUTHORIZED NETWORK SCAN</span><h2>Discover devices across agent networks</h2><p>Only active interfaces inside administrator-authorized CIDRs can be selected. Scans run from their reporting agents.</p></div><label className="field-label">Agent<select className="text-input" value={agentId} onChange={e=>{setAgentId(e.target.value);setJobs([]);setPage(0)}}><option value="ALL">All agents</option>{agents.map(a=><option key={a.agentId} value={a.agentId}>{a.name} · {a.status}</option>)}</select></label><button className="button button-secondary" onClick={()=>void start(eligible.map(n=>n.networkId))} disabled={!canManage||!eligible.length||active||busy}>Scan all eligible</button><button className="button button-primary" onClick={()=>void start()} disabled={!canManage||!selectedIds.length||active||busy}>{busy?'Starting…':active?'Scan in progress':'Start scan'}</button><button className="button button-secondary" onClick={()=>setSelectedIds(eligible.map(n=>n.networkId))} disabled={!eligible.length}>Select eligible</button></section>
+    {isAdmin&&agentId!=='ALL'&&<details className="panel authorized-network-editor"><summary>Authorized CIDRs for {agents.find(a=>a.agentId===agentId)?.name}</summary><p>Only add ranges the organization owns and has approved for monitoring. CIDRs are checked against live interface networks before scans can run.</p><textarea className="text-input" aria-label="Authorized CIDRs" value={allowedText} onChange={e=>setAllowedText(e.target.value)} rows={3}/><button className="button button-secondary" disabled={savingAllowed} onClick={()=>void saveAuthorizedCidrs()}>{savingAllowed?'Saving…':'Save authorized CIDRs'}</button></details>}
+    <section className="panel network-picker"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">AVAILABLE NETWORKS</span><h2>{agentNetworks.length} reported interface network(s)</h2></div><div className="heading-actions"><label className="search-box"><Search size={16}/><input aria-label="Search networks" placeholder="Search networks" value={search} onChange={e=>setSearch(e.target.value)}/></label><select className="filter-select" aria-label="Filter interface type" value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="ALL">All interfaces</option>{[...new Set(networks.map(n=>n.interfaceType))].map(t=><option key={t}>{t}</option>)}</select><select className="filter-select" aria-label="Filter network status" value={interfaceStatusFilter} onChange={e=>setInterfaceStatusFilter(e.target.value)}><option value="ALL">All network statuses</option><option>UP</option><option>DOWN</option></select><button className="button button-secondary" onClick={()=>setNetworkRefreshKey(k=>k+1)}>Refresh networks</button></div></div>{filteredNetworks.length?<div className="network-card-grid">{filteredNetworks.map(n=><label className={`network-card ${n.scanEligible&&n.agentStatus==='ONLINE'?'':'network-card-disabled'}`} key={n.networkId}><input type="checkbox" checked={selectedIds.includes(n.networkId)} disabled={!n.scanEligible||n.agentStatus!=='ONLINE'} onChange={()=>toggle(n.networkId)}/><span className="network-card-content"><strong>{n.cidr}</strong><small>{n.agentName} · {n.interfaceName} ({n.interfaceType})</small><small>IP {n.address??'—'} · Mask {n.subnetMask??'—'} · Gateway {n.gateway??'—'}</small><small>Broadcast {n.broadcastAddress??'—'} · MAC {n.macAddress??'—'} · IPv6 {n.ipv6Address??'—'}</small><small>{n.authorized?'Authorized':'Not authorized'} · {n.scanEligible?'Scan eligible':'Not eligible'} · {n.deviceCount} devices</small><small>Last detected {formatRelative(n.lastDetectedAt)} · Last scan {formatRelative(n.lastScanAt)}</small></span></label>)}</div>:<EmptyState icon={<Network size={20}/>} title="No interface networks reported" detail="Online agents report their interfaces after registration and periodically while running."/>}</section>
+    <section className="metric-grid discovery-stats"><MetricCard label="SCAN STATUS" value={String(aggregate?.status??'READY')} note={`${activeJobs.length} queued or running`} icon={<Activity size={18}/>} tone="blue" trend={activeJobs.length?`${activeJobs.length} active network(s)`:'No scan running'} /><MetricCard label="NETWORKS" value={String(currentJobs.length)} note="Networks in current scan" icon={<Network size={18}/>} tone="amber" trend={`${activeJobs.length} active`} /><MetricCard label="CHECKED" value={String(aggregate?.checked??0)} note="Addresses probed" icon={<Search size={18}/>} tone="amber" trend="Actual agent checks" /><MetricCard label="DISCOVERED" value={String(aggregate?.discovered??0)} note="Reachable devices" icon={<Server size={18}/>} tone="green" trend={`${aggregate?.newDevices??0} new`} /><MetricCard label="EXISTING" value={String(aggregate?.existingDevices??0)} note="Already registered" icon={<Router size={18}/>} tone="blue" trend="Duplicate safe" /><MetricCard label="FAILED / UNREACHABLE" value={String(aggregate?.failed??0)} note="Addresses with no response" icon={<AlertTriangle size={18}/>} tone="red" trend={aggregate?.durationMs!=null?`${(aggregate.durationMs/1000).toFixed(1)}s duration`:'—'} /></section>
+    {active&&<section className="panel discovery-progress"><div className="panel-heading"><div><span className="panel-kicker">SCAN PROGRESS</span><h2>{activeJobs.length} network scans</h2></div><span className="mini-status">Live agent reports</span></div><div className="scan-job-list scan-job-list-detailed">{activeJobs.map(j=><div className="scan-job" key={j.scanId}><div><strong>{j.networkCidr}</strong><span>{j.status} · {j.progress}% · {j.checked} checked · {j.discovered} found</span></div><div className="status-track"><span style={{width:`${j.progress}%`}}/></div></div>)}</div></section>}
+    {latest?.status==='FAILED'&&<div className="error-banner" role="alert"><AlertTriangle size={17}/><span>{latest.errorMessage??'The scan failed.'}</span></div>}
+    <section className="panel table-panel discovery-table"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">REGISTERED RESULTS</span><h2>Devices across {selected?.name??'selected agent networks'}</h2></div><label className="search-box"><Search size={16}/><input aria-label="Search discovered devices" placeholder="Search devices" value={search} onChange={e=>{setSearch(e.target.value);setPage(0)}}/></label></div>{visible.length?<div className="table-scroll"><table className="data-table"><thead><tr><th>DEVICE</th><th>HOSTNAME</th><th>IP ADDRESS</th><th>NETWORK</th><th>MAC</th><th>STATUS</th><th>LAST SEEN</th></tr></thead><tbody>{visible.map(d=><tr key={d.deviceId}><td>{d.name}</td><td>{d.hostname??'—'}</td><td>{d.ipAddress}</td><td>{d.networkCidr??'—'}</td><td>{d.macAddress??'—'}</td><td><StatusBadge status={d.status}/></td><td>{formatRelative(d.lastSeenAt)}</td></tr>)}</tbody></table></div>:<EmptyState icon={<Network size={20}/>} title="No devices to show" detail="Run a scan from an eligible online agent network to discover and register devices."/>}<div className="table-pagination"><span>{matching.length} devices</span><div><button className="button button-secondary" disabled={page===0} onClick={()=>setPage(p=>p-1)}>Previous</button><button className="button button-secondary" disabled={(page+1)*10>=matching.length} onClick={()=>setPage(p=>p+1)}>Next</button></div></div></section>
+    {latest&&<p className="discovery-last-scan">Last scan {formatRelative(latest.finishedAt??latest.createdAt)} · {latest.networkCidr}</p>}
+  </div>
+}
+
+function DevicesView({ devices, total, page, onPageChange, canManage, canDelete, agents, onOpenDevice, onOpenAgent, onNavigate, token, onChanged, onError }: {
   devices: Device[]; total: number; page: number; onPageChange: (page: number) => void; canManage: boolean; canDelete: boolean
-  agents: Agent[]; onOpenDevice: (id: string) => void; onOpenAgent: (id: string) => void; token: string; onChanged: () => void; onError: (message: string) => void
+  agents: Agent[]; onOpenDevice: (id: string) => void; onOpenAgent: (id: string) => void; onNavigate:(view:ViewKey)=>void; token: string; onChanged: () => void; onError: (message: string) => void
 }) {
   const [editing, setEditing] = useState<Device | null | false>(false)
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [agentFilter, setAgentFilter] = useState('ALL')
+  const [networkFilter,setNetworkFilter]=useState('ALL'); const [interfaceFilter,setInterfaceFilter]=useState('ALL'); const [typeFilter,setTypeFilter]=useState('ALL'); const [sortBy,setSortBy]=useState('name')
   const visible = devices.filter((device) => (statusFilter === 'ALL' || device.status === statusFilter)
-    && (agentFilter === 'ALL' || device.agentId === agentFilter))
+    && (agentFilter === 'ALL' || device.agentId === agentFilter)
+    && (networkFilter==='ALL'||device.networkCidr===networkFilter)
+    && (interfaceFilter==='ALL'||device.interfaceName===interfaceFilter)
+    && (typeFilter==='ALL'||device.deviceType===typeFilter)).sort((a,b)=>sortBy==='ip'?a.ipAddress.localeCompare(b.ipAddress,undefined,{numeric:true}):sortBy==='lastSeen'?Date.parse(b.lastSeenAt??'')-Date.parse(a.lastSeenAt??''):a.name.localeCompare(b.name))
   const pages = Math.max(1, Math.ceil(total / 100))
   async function remove(device: Device) {
     if (!window.confirm(`Delete ${device.name} (${device.ipAddress})? This cannot be undone.`)) return
     try { await request<void>(`/devices/${device.deviceId}`, token, { method: 'DELETE' }); onChanged() }
     catch (reason) { onError(reason instanceof Error ? reason.message : 'Could not delete device') }
   }
+  async function toggleMonitoring(device: Device) {
+    try {
+      await request<Device>(`/devices/${device.deviceId}/monitoring`, token, {
+        method: 'PATCH', body: JSON.stringify({ enabled: !device.monitoringEnabled }),
+      })
+      onChanged()
+    } catch (reason) { onError(reason instanceof Error ? reason.message : 'Could not update device monitoring') }
+  }
   return <>
     <section className="panel full-table-panel">
       <div className="panel-heading full-table-heading"><div><span className="panel-kicker">INVENTORY</span><h2>Monitored devices</h2><p>{total} registered endpoints</p></div>
-        <div className="heading-actions"><select className="filter-select" aria-label="Filter device status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option>ONLINE</option><option>OFFLINE</option><option>UNKNOWN</option></select><select className="filter-select" aria-label="Filter devices by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="ALL">All agents</option>{agents.map((agent) => <option key={agent.agentId} value={agent.agentId}>{agent.name}</option>)}</select>{canManage && <button className="button button-primary" onClick={() => setEditing(null)}>Add device</button>}</div>
+        <div className="heading-actions"><button className="button button-secondary" onClick={()=>onNavigate('network-discovery')}>Scan network</button><select className="filter-select" aria-label="Filter by network" value={networkFilter} onChange={e=>setNetworkFilter(e.target.value)}><option value="ALL">All networks</option>{[...new Set(devices.map(d=>d.networkCidr).filter((x):x is string=>Boolean(x)))].map(n=><option key={n}>{n}</option>)}</select><select className="filter-select" aria-label="Filter by interface" value={interfaceFilter} onChange={e=>setInterfaceFilter(e.target.value)}><option value="ALL">All interfaces</option>{[...new Set(devices.map(d=>d.interfaceName).filter((x):x is string=>Boolean(x)))].map(n=><option key={n}>{n}</option>)}</select><select className="filter-select" aria-label="Filter device type" value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="ALL">All types</option>{[...new Set(devices.map(d=>d.deviceType))].map(t=><option key={t}>{t}</option>)}</select><select className="filter-select" aria-label="Sort devices" value={sortBy} onChange={e=>setSortBy(e.target.value)}><option value="name">Name A-Z</option><option value="ip">IP address</option><option value="lastSeen">Last seen</option></select><select className="filter-select" aria-label="Filter device status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option>ONLINE</option><option>OFFLINE</option><option>UNKNOWN</option></select><select className="filter-select" aria-label="Filter devices by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="ALL">All agents</option>{agents.map((agent) => <option key={agent.agentId} value={agent.agentId}>{agent.name}</option>)}</select>{canManage && <button className="button button-primary" onClick={() => setEditing(null)}>Add device</button>}</div>
       </div>
-      {visible.length ? <div className="table-scroll"><table className="data-table device-data-table"><thead><tr><th>DEVICE</th><th>TYPE</th><th>LOCATION</th><th>AGENT</th><th>STATUS</th><th>MONITORING</th><th>UPDATED</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((device) => <tr key={device.deviceId}>
-        <td><button className="table-link table-device" onClick={() => onOpenDevice(device.deviceId)}><span className={`table-device-icon ${device.status === 'OFFLINE' ? 'table-device-offline' : ''}`}><Server size={15} /></span><span><strong>{device.name}</strong><small>{device.hostname || device.ipAddress}</small></span></button></td><td><span className="device-type">{device.deviceType}</span></td><td className="location-cell">{device.location || 'Unassigned'}</td>
-        <td><button className="text-link" onClick={() => onOpenAgent(device.agentId)}>{agents.find((agent) => agent.agentId === device.agentId)?.name ?? device.agentId.slice(0, 8)}</button></td><td><StatusBadge status={device.status} /></td><td><span className={`monitoring-state ${device.monitoringEnabled ? 'monitoring-on' : ''}`}><span />{device.monitoringEnabled ? 'Enabled' : 'Paused'}</span></td><td className="time-cell">{formatRelative(device.updatedAt)}</td>
-        <td><div className="row-actions">{canManage && <button className="text-link" onClick={() => setEditing(device)}>Edit</button>}{canDelete && <button className="text-link danger-link" onClick={() => void remove(device)}>Delete</button>}</div></td>
+      {visible.length ? <div className="table-scroll"><table className="data-table device-data-table"><thead><tr><th>DEVICE</th><th>TYPE</th><th>LOCATION</th><th>NETWORK</th><th>MAC</th><th>AGENT</th><th>STATUS</th><th>MONITORING</th><th>LAST SEEN</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((device) => <tr key={device.deviceId}>
+        <td><button className="table-link table-device" onClick={() => onOpenDevice(device.deviceId)}><span className={`table-device-icon ${device.status === 'OFFLINE' ? 'table-device-offline' : ''}`}><Server size={15} /></span><span><strong>{device.name}</strong><small>{device.hostname || device.ipAddress}</small></span></button></td><td><span className="device-type">{device.deviceType}</span></td><td className="location-cell">{device.location||'Unassigned'}</td><td>{device.networkCidr??'—'}{device.interfaceName&&<small className="subcell">{device.interfaceName}</small>}</td><td>{device.macAddress??'—'}</td>
+        <td><button className="text-link" onClick={() => onOpenAgent(device.agentId)}>{agents.find((agent) => agent.agentId === device.agentId)?.name ?? device.agentId.slice(0, 8)}</button></td><td><StatusBadge status={device.status} /></td><td><span className={`monitoring-state ${device.monitoringEnabled ? 'monitoring-on' : ''}`}><span />{device.monitoringEnabled ? 'Enabled' : 'Paused'}</span></td><td className="time-cell">{formatRelative(device.lastSeenAt)}</td>
+        <td><div className="row-actions">{canManage && <><button className="text-link" onClick={() => void toggleMonitoring(device)} aria-label={`${device.monitoringEnabled ? 'Pause' : 'Enable'} monitoring for ${device.name}`}>{device.monitoringEnabled ? 'Pause' : 'Enable'}</button><button className="text-link" onClick={() => setEditing(device)}>Edit</button></>}{canDelete && <button className="text-link danger-link" onClick={() => void remove(device)}>Delete</button>}</div></td>
       </tr>)}</tbody></table></div> : <EmptyState icon={<Router size={20} />} title="No devices found" detail="Try a different search or register a device assigned to an agent." />}
       <div className="table-pagination"><span>Showing {total ? page * 100 + 1 : 0}–{Math.min((page + 1) * 100, total)} of {total} devices</span><div><button className="button button-secondary" disabled={page === 0} onClick={() => onPageChange(page - 1)}>Previous</button><span>Page {page + 1} of {pages}</span><button className="button button-secondary" disabled={page + 1 >= pages} onClick={() => onPageChange(page + 1)}>Next</button></div></div>
     </section>
@@ -402,15 +458,17 @@ function DevicesView({ devices, total, page, onPageChange, canManage, canDelete,
   </>
 }
 
-function AgentsView({ agents, total, page, onPageChange, onOpenAgent }: {
-  agents: Agent[]; total: number; page: number; onPageChange: (page: number) => void; onOpenAgent: (id: string) => void
+function AgentsView({ agents, total, page, onPageChange, onOpenAgent, token, onNavigate }: {
+  agents: Agent[]; total: number; page: number; onPageChange: (page: number) => void; onOpenAgent: (id: string) => void; token:string; onNavigate:(view:ViewKey)=>void
 }) {
   const [statusFilter, setStatusFilter] = useState('ALL')
+  const [networks,setNetworks]=useState<NetworkInfo[]>([])
+  useEffect(()=>{let alive=true;void request<NetworkInfo[]>('/discovery/networks',token).then(value=>{if(alive)setNetworks(Array.isArray(value)?value:[])}).catch(()=>{});return()=>{alive=false}},[token])
   const visible = agents.filter((agent) => statusFilter === 'ALL' || agent.status === statusFilter)
   const pages = Math.max(1, Math.ceil(total / 100))
   return <>
     <div className="view-toolbar"><span>{total} registered agents</span><select className="filter-select" aria-label="Filter agent status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option>ONLINE</option><option>OFFLINE</option><option>UNKNOWN</option></select></div>
-    <section className="agent-card-grid">{visible.length ? visible.map((agent) => <article className="panel agent-card" key={agent.agentId}><div className="agent-card-top"><div className="agent-emblem"><RadioTower size={19} /></div><StatusBadge status={agent.status} /></div><h2>{agent.name}</h2><p className="agent-subtitle">{agent.segmentCidr}</p><div className="agent-card-rule" /><div className="agent-meta"><span>VERSION</span><strong>{agent.version || 'Not reported'}</strong></div><div className="agent-meta"><span>LAST HEARTBEAT</span><strong>{formatRelative(agent.lastHeartbeat)}</strong></div><div className="agent-meta"><span>REGISTERED</span><strong>{formatRelative(agent.registeredAt)}</strong></div><div className="agent-id">ID <code>{agent.agentId}</code></div><button className="panel-footer-link" onClick={() => onOpenAgent(agent.agentId)}>View agent details <ArrowRight size={14} /></button></article>) : <div className="panel empty-agents"><EmptyState icon={<RadioTower size={20} />} title="No agents found" detail="Try a different search or status filter." /></div>}</section>
+    <section className="agent-card-grid">{visible.length ? visible.map((agent) => {const nets=networks.filter(n=>n.agentId===agent.agentId);return <article className="panel agent-card" key={agent.agentId}><div className="agent-card-top"><div className="agent-emblem"><RadioTower size={19} /></div><StatusBadge status={agent.status} /></div><h2>{agent.name}</h2><p className="agent-subtitle">{agent.segmentCidr}</p><div className="agent-card-rule" /><div className="agent-meta"><span>VERSION</span><strong>{agent.version || 'Not reported'}</strong></div><div className="agent-meta"><span>LAST HEARTBEAT</span><strong>{formatRelative(agent.lastHeartbeat)}</strong></div><div className="agent-meta"><span>REGISTERED</span><strong>{formatRelative(agent.registeredAt)}</strong></div><div className="agent-meta"><span>NETWORKS / DEVICES</span><strong>{nets.length} / {nets.reduce((sum,n)=>sum+n.deviceCount,0)}</strong></div><div className="agent-meta"><span>LAST SCAN</span><strong>{formatRelative(nets.map(n=>n.lastScanAt).filter(Boolean).sort().at(-1))}</strong></div><div className="agent-id">ID <code>{agent.agentId}</code></div><button className="panel-footer-link" onClick={() => onOpenAgent(agent.agentId)}>View agent details <ArrowRight size={14} /></button><button className="panel-footer-link" onClick={()=>onNavigate('network-discovery')}>View networks / scan <ArrowRight size={14}/></button></article>}) : <div className="panel empty-agents"><EmptyState icon={<RadioTower size={20} />} title="No agents found" detail="Try a different search or status filter." /></div>}</section>
     <div className="table-pagination"><span>Showing {total ? page * 100 + 1 : 0}–{Math.min((page + 1) * 100, total)} of {total} agents</span><div><button className="button button-secondary" disabled={page === 0} onClick={() => onPageChange(page - 1)}>Previous</button><span>Page {page + 1} of {pages}</span><button className="button button-secondary" disabled={page + 1 >= pages} onClick={() => onPageChange(page + 1)}>Next</button></div></div>
   </>
 }
