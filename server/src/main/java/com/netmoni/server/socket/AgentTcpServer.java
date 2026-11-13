@@ -155,13 +155,14 @@ public class AgentTcpServer {
 			}
 			if ("discovery.poll".equals(message.type())) {
 				agentRegistrationService.getAgent(message.agentId());
+				var targets = deviceService.monitoringTargets(message.agentId());
 				var scan = discoveryScanService.poll(message.agentId());
-				return scan == null ? AgentTcpResponse.scanIdle(message.agentId()) : AgentTcpResponse.scanCommand(message.agentId(), scan);
+				return scan == null ? AgentTcpResponse.scanIdle(message.agentId(), targets) : AgentTcpResponse.scanCommand(message.agentId(), scan, targets);
 			}
-			if ("discovery.started".equals(message.type())) { discoveryScanService.started(message.agentId(), message.scanId()); return AgentTcpResponse.scanIdle(message.agentId()); }
-			if ("discovery.progress".equals(message.type())) { discoveryScanService.progress(message.agentId(), message.scanId(), value(message.progress()), value(message.checked()), value(message.discovered()), value(message.failed()), value(message.newDevices()), value(message.existingDevices())); return AgentTcpResponse.scanIdle(message.agentId()); }
-			if ("discovery.completed".equals(message.type())) { discoveryScanService.complete(message.agentId(), message.scanId(), value(message.checked()), value(message.discovered()), value(message.failed()), value(message.newDevices()), value(message.existingDevices()), message.durationMs() == null ? 0 : message.durationMs()); return AgentTcpResponse.scanIdle(message.agentId()); }
-			if ("discovery.failed".equals(message.type())) { discoveryScanService.fail(message.agentId(), message.scanId(), message.errorMessage()); return AgentTcpResponse.scanIdle(message.agentId()); }
+			if ("discovery.started".equals(message.type())) { discoveryScanService.started(message.agentId(), message.scanId()); return AgentTcpResponse.scanIdle(message.agentId(), java.util.List.of()); }
+			if ("discovery.progress".equals(message.type())) { discoveryScanService.progress(message.agentId(), message.scanId(), value(message.progress()), value(message.checked()), value(message.discovered()), value(message.failed()), value(message.newDevices()), value(message.existingDevices())); return AgentTcpResponse.scanIdle(message.agentId(), java.util.List.of()); }
+			if ("discovery.completed".equals(message.type())) { discoveryScanService.complete(message.agentId(), message.scanId(), value(message.checked()), value(message.discovered()), value(message.failed()), value(message.newDevices()), value(message.existingDevices()), message.durationMs() == null ? 0 : message.durationMs()); return AgentTcpResponse.scanIdle(message.agentId(), java.util.List.of()); }
+			if ("discovery.failed".equals(message.type())) { discoveryScanService.fail(message.agentId(), message.scanId(), message.errorMessage()); return AgentTcpResponse.scanIdle(message.agentId(), java.util.List.of()); }
 			return AgentTcpResponse.error("unsupported_message_type");
 		} catch (AgentNotFoundException exception) {
 			return AgentTcpResponse.error("agent_not_registered");

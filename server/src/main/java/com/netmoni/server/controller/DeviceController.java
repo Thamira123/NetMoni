@@ -23,5 +23,6 @@ public class DeviceController {
 	@GetMapping("/by-agent/{agentId}") public List<DeviceResponse> byAgent(@PathVariable UUID agentId) { return service.findByAgent(agentId); }
 	@PutMapping("/{id}") @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')") public DeviceResponse update(@PathVariable UUID id, @Valid @RequestBody DeviceRequest request) { return service.update(id, request); }
 	@PatchMapping("/{id}/status") @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')") public DeviceResponse status(@PathVariable UUID id, @RequestParam DeviceStatus status) { return service.updateStatus(id, status); }
+	@PatchMapping("/{id}/monitoring") @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')") public DeviceResponse monitoring(@PathVariable UUID id, @Valid @RequestBody com.netmoni.server.dto.device.DeviceMonitoringRequest request) { return service.updateMonitoringEnabled(id, request.enabled()); }
 	@DeleteMapping("/{id}") @PreAuthorize("hasRole('ADMIN')") @ResponseStatus(HttpStatus.NO_CONTENT) public void delete(@PathVariable UUID id) { service.delete(id); }
 }

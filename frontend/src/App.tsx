@@ -429,6 +429,14 @@ function DevicesView({ devices, total, page, onPageChange, canManage, canDelete,
     try { await request<void>(`/devices/${device.deviceId}`, token, { method: 'DELETE' }); onChanged() }
     catch (reason) { onError(reason instanceof Error ? reason.message : 'Could not delete device') }
   }
+  async function toggleMonitoring(device: Device) {
+    try {
+      await request<Device>(`/devices/${device.deviceId}/monitoring`, token, {
+        method: 'PATCH', body: JSON.stringify({ enabled: !device.monitoringEnabled }),
+      })
+      onChanged()
+    } catch (reason) { onError(reason instanceof Error ? reason.message : 'Could not update device monitoring') }
+  }
   return <>
     <section className="panel full-table-panel">
       <div className="panel-heading full-table-heading"><div><span className="panel-kicker">INVENTORY</span><h2>Monitored devices</h2><p>{total} registered endpoints</p></div>
@@ -437,7 +445,7 @@ function DevicesView({ devices, total, page, onPageChange, canManage, canDelete,
       {visible.length ? <div className="table-scroll"><table className="data-table device-data-table"><thead><tr><th>DEVICE</th><th>TYPE</th><th>LOCATION</th><th>NETWORK</th><th>MAC</th><th>AGENT</th><th>STATUS</th><th>MONITORING</th><th>LAST SEEN</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((device) => <tr key={device.deviceId}>
         <td><button className="table-link table-device" onClick={() => onOpenDevice(device.deviceId)}><span className={`table-device-icon ${device.status === 'OFFLINE' ? 'table-device-offline' : ''}`}><Server size={15} /></span><span><strong>{device.name}</strong><small>{device.hostname || device.ipAddress}</small></span></button></td><td><span className="device-type">{device.deviceType}</span></td><td className="location-cell">{device.location||'Unassigned'}</td><td>{device.networkCidr??'—'}{device.interfaceName&&<small className="subcell">{device.interfaceName}</small>}</td><td>{device.macAddress??'—'}</td>
         <td><button className="text-link" onClick={() => onOpenAgent(device.agentId)}>{agents.find((agent) => agent.agentId === device.agentId)?.name ?? device.agentId.slice(0, 8)}</button></td><td><StatusBadge status={device.status} /></td><td><span className={`monitoring-state ${device.monitoringEnabled ? 'monitoring-on' : ''}`}><span />{device.monitoringEnabled ? 'Enabled' : 'Paused'}</span></td><td className="time-cell">{formatRelative(device.lastSeenAt)}</td>
-        <td><div className="row-actions">{canManage && <button className="text-link" onClick={() => setEditing(device)}>Edit</button>}{canDelete && <button className="text-link danger-link" onClick={() => void remove(device)}>Delete</button>}</div></td>
+        <td><div className="row-actions">{canManage && <><button className="text-link" onClick={() => void toggleMonitoring(device)} aria-label={`${device.monitoringEnabled ? 'Pause' : 'Enable'} monitoring for ${device.name}`}>{device.monitoringEnabled ? 'Pause' : 'Enable'}</button><button className="text-link" onClick={() => setEditing(device)}>Edit</button></>}{canDelete && <button className="text-link danger-link" onClick={() => void remove(device)}>Delete</button>}</div></td>
       </tr>)}</tbody></table></div> : <EmptyState icon={<Router size={20} />} title="No devices found" detail="Try a different search or register a device assigned to an agent." />}
       <div className="table-pagination"><span>Showing {total ? page * 100 + 1 : 0}–{Math.min((page + 1) * 100, total)} of {total} devices</span><div><button className="button button-secondary" disabled={page === 0} onClick={() => onPageChange(page - 1)}>Previous</button><span>Page {page + 1} of {pages}</span><button className="button button-secondary" disabled={page + 1 >= pages} onClick={() => onPageChange(page + 1)}>Next</button></div></div>
     </section>

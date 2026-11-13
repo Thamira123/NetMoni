@@ -44,4 +44,12 @@ class DeviceServiceTest {
 		when(agents.findById(agentId)).thenReturn(Optional.of(agent));
 		assertThrows(IllegalArgumentException.class,()->service.registerDiscovered(agentId,List.of(new DiscoveredDeviceRequest("10.0.1.20",null,Instant.now()))));
 		verify(devices,never()).save(any());}
+	@Test void togglesMonitoringAndPublishesDeviceUpdate(){UUID agentId=UUID.randomUUID();UUID deviceId=UUID.randomUUID();Agent agent=new Agent(agentId,"agent","10.0.0.0/24","1",Instant.now());Device device=new Device(deviceId,"host","10.0.0.20",null,"UNKNOWN",null,agent);
+		when(devices.findById(deviceId)).thenReturn(Optional.of(device));when(devices.save(device)).thenReturn(device);
+		var response=service.updateMonitoringEnabled(deviceId,false);
+		assertFalse(response.monitoringEnabled());verify(events).publish(eq("/topic/devices"),eq("device.monitoring.changed"),any());}
+	@Test void servesOnlyEnabledDevicesAsAgentMonitoringTargets(){UUID agentId=UUID.randomUUID();Agent agent=new Agent(agentId,"agent","10.0.0.0/24","1",Instant.now());Device device=new Device(UUID.randomUUID(),"host","10.0.0.20",null,"UNKNOWN",null,agent);
+		when(agents.existsById(agentId)).thenReturn(true);when(devices.findByAgent_IdAndMonitoringEnabledTrue(agentId)).thenReturn(List.of(device));
+		var targets=service.monitoringTargets(agentId);
+		assertEquals(1,targets.size());assertEquals("10.0.0.20",targets.getFirst().ipAddress());assertEquals(device.getId(),targets.getFirst().deviceId());}
 }

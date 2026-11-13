@@ -117,6 +117,23 @@ public class DeviceService {
 		return response;
 	}
 	@Transactional
+	public DeviceResponse updateMonitoringEnabled(UUID id, boolean enabled) {
+		Device device = requireDevice(id);
+		if (device.isMonitoringEnabled() == enabled) return toResponse(device);
+		device.updateMonitoringEnabled(enabled);
+		DeviceResponse response = toResponse(devices.save(device));
+		events.publish("/topic/devices", "device.monitoring.changed", response);
+		events.publish("/topic/dashboard", "dashboard.statistics.updated", java.util.Map.of("generatedAt", java.time.Instant.now()));
+		return response;
+	}
+	@Transactional(readOnly = true)
+	public List<com.netmoni.server.dto.agent.AgentMonitoringTarget> monitoringTargets(UUID agentId) {
+		if (!agents.existsById(agentId)) throw new AgentNotFoundException(agentId);
+		return devices.findByAgent_IdAndMonitoringEnabledTrue(agentId).stream()
+				.map(device -> new com.netmoni.server.dto.agent.AgentMonitoringTarget(device.getIpAddress(), device.getId()))
+				.toList();
+	}
+	@Transactional
 	public void delete(UUID id) { devices.delete(requireDevice(id)); }
 	private Device requireDevice(UUID id) { return devices.findById(id).orElseThrow(() -> new DeviceNotFoundException(id)); }
 	private static String clean(String value) { return value == null || value.isBlank() ? null : value.trim(); }

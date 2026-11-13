@@ -13,6 +13,7 @@ public interface DeviceRepository extends JpaRepository<Device, UUID>,JpaSpecifi
 	Optional<Device> findByAgent_IdAndIpAddress(UUID agentId, String ipAddress);
 	long countByStatus(DeviceStatus status);
 	long countByMonitoringEnabledTrue();
+	List<Device> findByAgent_IdAndMonitoringEnabledTrue(UUID agentId);
 	long countByAgent_Id(java.util.UUID agentId);
 	long countByAgent_IdAndNetworkCidr(java.util.UUID agentId,String networkCidr);
 	java.util.List<Device> findByNetworkCidr(String networkCidr);

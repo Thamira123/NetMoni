@@ -78,6 +78,7 @@ public class Device {
 	}
 	public void updateDiscoveryMetadata(String hostname,String networkCidr,String interfaceName,String macAddress,String deviceType,Instant seenAt){if(hostname!=null&&!hostname.isBlank())this.hostname=hostname;if(networkCidr!=null&&!networkCidr.isBlank())this.networkCidr=networkCidr;if(interfaceName!=null&&!interfaceName.isBlank())this.interfaceName=interfaceName;if(macAddress!=null&&!macAddress.isBlank())this.macAddress=macAddress;if(deviceType!=null&&!deviceType.isBlank()&&"UNKNOWN".equals(this.deviceType))this.deviceType=deviceType;this.lastSeenAt=seenAt==null?Instant.now():seenAt;}
 	public void updateStatus(DeviceStatus status) { this.status = status; }
+	public void updateMonitoringEnabled(boolean enabled) { this.monitoringEnabled = enabled; }
 	public void recordSeen(Instant at){this.lastSeenAt=at==null?Instant.now():at;}
 	public UUID getId() { return id; }
 	public String getName() { return name; }

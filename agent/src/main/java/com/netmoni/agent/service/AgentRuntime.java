@@ -114,7 +114,6 @@ public final class AgentRuntime implements AutoCloseable {
                     registeredCount+=mergeDeviceMappings(cidr,deviceIds,ack.path("devices")); totalFound+=found.size();
                 }
                 logger.info("Discovery found {} reachable device(s); {} registered across authorized interfaces",totalFound,registeredCount);
-                monitorDevices();
             } catch (IOException exception) {
                 logger.warn("Could not register discovered devices; discovery will retry: {}", exception.getMessage());
             } catch (RuntimeException exception) {
@@ -131,6 +130,7 @@ public final class AgentRuntime implements AutoCloseable {
         if (!registered.get()) return;
         try {
             JsonNode response = backend.send(ProtocolMessages.discoveryCommand(mapper, config.agentId()), null);
+            replaceMonitoringTargets(deviceIds, response.path("monitoringTargets"), config.allowedCidrs());
             if ("discovery.command".equals(response.path("type").asText()) && response.hasNonNull("scanId")) {
                 UUID scanId = UUID.fromString(response.path("scanId").asText());
                 String cidr=response.path("networkCidr").asText("");
@@ -172,7 +172,6 @@ public final class AgentRuntime implements AutoCloseable {
             backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.completed", 100,
                     checked, found.size(), failed,
                     newDevices.get(), existingDevices.get(), duration, null), "discovery.idle");
-            monitorDevices();
             logger.info("Dashboard scan {} completed: {} reachable device(s)", scanId, found.size());
         } catch (Exception exception) {
             try { backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.failed", 0, 0, 0, 0, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt), exception.getMessage()), "discovery.idle"); }
@@ -196,6 +195,25 @@ public final class AgentRuntime implements AutoCloseable {
             }
         }
         return registeredCount;
+    }
+
+    static void replaceMonitoringTargets(Map<String, UUID> mappings, JsonNode targets, List<Ipv4Cidr> allowedCidrs) {
+        if (targets == null || !targets.isArray()) return;
+        Map<String, UUID> updated = new ConcurrentHashMap<>();
+        for (JsonNode target : targets) {
+            String ip = target.path("ipAddress").asText("");
+            String id = target.path("deviceId").asText("");
+            if (ip.isBlank() || id.isBlank() || allowedCidrs.stream().noneMatch(c -> c.contains(ip))) continue;
+            try { updated.put(ip, UUID.fromString(id)); }
+            catch (IllegalArgumentException ignored) { /* Ignore malformed backend target rows. */ }
+        }
+        mappings.clear();
+        mappings.putAll(updated);
+    }
+
+    static boolean isMonitoringTarget(Map<String, UUID> mappings, String deviceId) {
+        try { return mappings.containsValue(UUID.fromString(deviceId)); }
+        catch (IllegalArgumentException ignored) { return false; }
     }
 
     private void monitorDevices() {
@@ -242,6 +260,11 @@ public final class AgentRuntime implements AutoCloseable {
             while (true) {
                 JsonNode message = outbox.peek();
                 if (message == null) return;
+                String queuedDevice = message.path("deviceId").asText("");
+                if (!queuedDevice.isBlank() && !isMonitoringTarget(deviceIds, queuedDevice)) {
+                    outbox.removeFirst();
+                    continue;
+                }
                 backend.send(message, "monitoring.result.accepted");
                 outbox.removeFirst();
             }

@@ -19,6 +19,7 @@ For browser clients hosted on a separate origin, configure `FRONTEND_ALLOWED_ORI
 - `POST /api/devices` (ADMIN/OPERATOR) and `PUT /api/devices/{id}` accept name, ipAddress, optional hostname, deviceType, optional location, and agentId.
 - `GET /api/devices?page=0&size=50`, `GET /api/devices/{id}`, `GET /api/devices/by-agent/{agentId}` (main list size max 100)
 - `PATCH /api/devices/{id}/status?status=ONLINE|OFFLINE|UNKNOWN` (ADMIN/OPERATOR)
+- `PATCH /api/devices/{id}/monitoring` with `{ "enabled": false }` pauses checks; `{ "enabled": true }` resumes them (ADMIN/OPERATOR). Agents receive the enabled-device target list on their next poll.
 - `DELETE /api/devices/{id}` (ADMIN)
 
 ## Monitoring results
