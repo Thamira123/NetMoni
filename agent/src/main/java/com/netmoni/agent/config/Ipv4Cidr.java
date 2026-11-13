@@ -53,7 +53,7 @@ public record Ipv4Cidr(long network, int prefixLength) {
 
     @Override
     public String toString() {
-        return formatAddress(network) + "/" + prefixLength;
+        return format(network) + "/" + prefixLength;
     }
 
     public List<String> hosts(int maxHosts) {
@@ -71,12 +71,12 @@ public record Ipv4Cidr(long network, int prefixLength) {
         }
         List<String> addresses = new ArrayList<>((int) hostCount);
         for (long ip = first; ip <= last; ip++) {
-            addresses.add(formatAddress(ip));
+            addresses.add(format(ip));
         }
         return List.copyOf(addresses);
     }
 
-    private static String formatAddress(long value) {
+    public static String format(long value) {
         return ((value >>> 24) & 255) + "." + ((value >>> 16) & 255) + "."
                 + ((value >>> 8) & 255) + "." + (value & 255);
     }

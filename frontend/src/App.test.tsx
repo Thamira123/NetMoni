@@ -35,17 +35,20 @@ const alert = {
   status: 'UNREAD', message: 'Lab collector heartbeat is late.', deviceId: null, agentId: agent.agentId,
   createdAt: '2026-11-13T00:00:00Z', resolvedAt: null,
 }
+const network = { networkId:'ffffffff-ffff-4fff-8fff-ffffffffffff',agentId:agent.agentId,agentName:agent.name,agentStatus:'ONLINE',interfaceName:'Ethernet',displayName:'Ethernet adapter',interfaceType:'ETHERNET',interfaceStatus:'UP',address:'10.0.0.4',cidr:'10.0.0.0/24',subnetMask:'255.255.255.0',broadcastAddress:'10.0.0.255',gateway:null,macAddress:'00:11:22:33:44:55',ipv6Address:null,ipv6PrefixLength:null,authorized:true,scanEligible:true,lastDetectedAt:'2026-11-13T00:00:00Z',deviceCount:1,lastScanAt:null }
 
 beforeEach(() => {
   sessionStorage.clear()
+  let queuedScan: Record<string, unknown> | null = null
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), window.location.origin)
-    if (url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scan') && url.search === '' && initMethod(input, init) === 'GET') return new Response(null, { status: 204 })
-    if (url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/devices')) return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.pathname === '/api/discovery/networks') return new Response(JSON.stringify([network]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/devices')) return new Response(JSON.stringify([device]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scans')) return new Response(JSON.stringify(queuedScan ? [queuedScan] : []), { status: 200, headers: { 'Content-Type': 'application/json' } })
     const response = url.pathname === '/api/auth/login'
       ? { accessToken: 'test-jwt', username: 'viewer@example.com', role: 'VIEWER', expiresAt: '2099-01-01T00:00:00Z' }
-      : url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scan') && initMethod(input, init) === 'POST'
-        ? { scanId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', agentId: agent.agentId, status: 'QUEUED', progress: 0, checked: 0, discovered: 0, failed: 0, createdAt: '2026-11-13T00:00:00Z' }
+      : url.pathname === '/api/discovery/scan' && initMethod(input, init) === 'POST'
+        ? (queuedScan = { scanId:'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',agentId:agent.agentId,networkId:network.networkId,networkCidr:network.cidr,status:'QUEUED',progress:0,checked:0,discovered:0,failed:0,newDevices:0,existingDevices:0,createdAt:'2026-11-13T00:00:00Z' }, [queuedScan])
       : url.pathname === '/api/dashboard/summary'
         ? summary
         : url.pathname === '/api/monitoring-results/recent'
@@ -106,10 +109,11 @@ describe('NetMoni application', () => {
     await screen.findByRole('heading', { name: 'Good network, good day.' })
     const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
     fireEvent.click(within(navigation).getByRole('button', { name: /Network discovery/ }))
-    expect(await screen.findByRole('heading', { name: 'Discover devices automatically' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Discover devices across agent networks' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByRole('button', { name: 'Start scan' }))
     expect(await screen.findByRole('button', { name: 'Scan in progress' })).toBeDisabled()
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scan', expect.objectContaining({ method: 'POST' })))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/discovery/scan', expect.objectContaining({ method: 'POST' })))
   })
 })
 

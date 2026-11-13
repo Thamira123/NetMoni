@@ -10,20 +10,27 @@ import com.netmoni.server.dto.discovery.DiscoveryScanResponse;
 @Service
 public class DiscoveryScanService {
  private final DiscoveryScanRepository scans; private final AgentRepository agents; private final NetMoniEventPublisher events;
- public DiscoveryScanService(DiscoveryScanRepository scans,AgentRepository agents,NetMoniEventPublisher events){this.scans=scans;this.agents=agents;this.events=events;}
+ private final AgentNetworkService agentNetworks; private final AgentNetworkRepository networkRepository;
+ @org.springframework.beans.factory.annotation.Autowired
+ public DiscoveryScanService(DiscoveryScanRepository scans,AgentRepository agents,NetMoniEventPublisher events,AgentNetworkService agentNetworks,AgentNetworkRepository networkRepository){this.scans=scans;this.agents=agents;this.events=events;this.agentNetworks=agentNetworks;this.networkRepository=networkRepository;}
+ public DiscoveryScanService(DiscoveryScanRepository scans,AgentRepository agents,NetMoniEventPublisher events){this(scans,agents,events,null,null);}
  @Transactional
  public synchronized DiscoveryScanResponse start(UUID agentId){
   Agent a=agents.findById(agentId).orElseThrow(()->new AgentNotFoundException(agentId));
   if(a.getStatus()!=AgentStatus.ONLINE)throw new IllegalStateException("Agent is offline; scan was not queued");
+  if(agentNetworks!=null&&!agentNetworks.isAuthorizedRange(a,a.getSegmentCidr()))throw new IllegalStateException("Agent segment is not in its administrator-authorized CIDRs");
   if(scans.existsByAgentIdAndStateIn(agentId,List.of(DiscoveryScan.State.QUEUED,DiscoveryScan.State.RUNNING)))throw new IllegalStateException("A scan is already queued or running for this agent");
-  DiscoveryScan scan=scans.save(new DiscoveryScan(agentId)); var dto=DiscoveryScanResponse.from(scan); events.publish("/topic/discovery","discovery.started",dto); return dto;
+  DiscoveryScan scan=scans.save(new DiscoveryScan(agentId,null,a.getSegmentCidr())); var dto=DiscoveryScanResponse.from(scan); events.publish("/topic/discovery","discovery.started",dto); return dto;
  }
+ @Transactional public synchronized DiscoveryScanResponse start(UUID agentId,UUID networkId){AgentNetwork n=agentNetworks.requireEligible(agentId,networkId);if(scans.existsByAgentIdAndNetworkIdAndStateIn(agentId,networkId,List.of(DiscoveryScan.State.QUEUED,DiscoveryScan.State.RUNNING)))throw new IllegalStateException("A scan is already queued or running for this network");DiscoveryScan scan=scans.save(new DiscoveryScan(agentId,networkId,n.getCidr()));var dto=DiscoveryScanResponse.from(scan);events.publish("/topic/discovery","discovery.started",dto);return dto;}
+ @Transactional public synchronized List<DiscoveryScanResponse> startMany(List<UUID> networkIds){if(networkIds==null||networkIds.isEmpty()||networkIds.size()>64)throw new IllegalArgumentException("Select between 1 and 64 networks");List<AgentNetwork> selected=new ArrayList<>();for(UUID id:new LinkedHashSet<>(networkIds)){AgentNetwork n=networkRepository.findById(id).orElseThrow(()->new IllegalArgumentException("Network not found"));agentNetworks.requireEligible(n.getAgent().getId(),id);if(scans.existsByAgentIdAndNetworkIdAndStateIn(n.getAgent().getId(),id,List.of(DiscoveryScan.State.QUEUED,DiscoveryScan.State.RUNNING)))throw new IllegalStateException("A scan is already queued or running for network "+n.getCidr());selected.add(n);}List<DiscoveryScanResponse> results=new ArrayList<>();for(AgentNetwork n:selected){DiscoveryScan scan=scans.save(new DiscoveryScan(n.getAgent().getId(),n.getId(),n.getCidr()));var dto=DiscoveryScanResponse.from(scan);events.publish("/topic/discovery","discovery.started",dto);results.add(dto);}return List.copyOf(results);}
  @Transactional
  public DiscoveryScanResponse latest(UUID agentId){if(!agents.existsById(agentId))throw new AgentNotFoundException(agentId);return scans.findFirstByAgentIdOrderByCreatedAtDesc(agentId).map(DiscoveryScanResponse::from).orElse(null);}
  @Transactional
  public List<DiscoveryScanResponse> history(UUID agentId){if(!agents.existsById(agentId))throw new AgentNotFoundException(agentId);return scans.findAll().stream().filter(s->s.getAgentId().equals(agentId)).sorted(Comparator.comparing(DiscoveryScan::getCreatedAt).reversed()).limit(20).map(DiscoveryScanResponse::from).toList();}
  @Transactional
- public UUID poll(UUID agentId){return scans.findFirstByAgentIdAndStateOrderByCreatedAtAsc(agentId,DiscoveryScan.State.QUEUED).map(DiscoveryScan::getId).orElse(null);}
+ public com.netmoni.server.dto.discovery.DiscoveryScanCommand poll(UUID agentId){return scans.findFirstByAgentIdAndStateOrderByCreatedAtAsc(agentId,DiscoveryScan.State.QUEUED).map(s->new com.netmoni.server.dto.discovery.DiscoveryScanCommand(s.getId(),s.getNetworkId(),s.getNetworkCidr())).orElse(null);}
+ @Transactional(readOnly=true) public DiscoveryScanResponse byId(UUID id){return scans.findById(id).map(DiscoveryScanResponse::from).orElseThrow(()->new IllegalArgumentException("Scan not found"));}
  @Transactional
  public void started(UUID agentId,UUID scanId){mutate(agentId,scanId,"discovery.started",DiscoveryScan::start);}
  @Transactional

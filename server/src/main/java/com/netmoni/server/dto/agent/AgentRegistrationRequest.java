@@ -10,5 +10,7 @@ public record AgentRegistrationRequest(
 		@NotNull UUID agentId,
 		@NotBlank @Size(max = 100) String name,
 		@NotBlank @Size(max = 50) String segmentCidr,
-		@NotBlank @Size(max = 50) String version) {
+		@NotBlank @Size(max = 50) String version,
+		java.util.List<String> authorizedCidrs) {
+	public AgentRegistrationRequest(UUID agentId,String name,String segmentCidr,String version){this(agentId,name,segmentCidr,version,segmentCidr==null?java.util.List.of():java.util.List.of(segmentCidr));}
 }

@@ -35,6 +35,10 @@ public class Device {
 	private String deviceType;
 	@Column(length = 160)
 	private String location;
+	@Column(name="network_cidr",length=50) private String networkCidr;
+	@Column(name="interface_name",length=120) private String interfaceName;
+	@Column(name="mac_address",length=24) private String macAddress;
+	@Column(name="last_seen_at") private Instant lastSeenAt;
 	@ManyToOne(fetch = FetchType.LAZY, optional = false)
 	@JoinColumn(name = "agent_id", nullable = false)
 	private Agent agent;
@@ -72,7 +76,9 @@ public class Device {
 	public void updateDiscoveredHostname(String hostname) {
 		if (hostname != null && !hostname.isBlank()) this.hostname = hostname;
 	}
+	public void updateDiscoveryMetadata(String hostname,String networkCidr,String interfaceName,String macAddress,String deviceType,Instant seenAt){if(hostname!=null&&!hostname.isBlank())this.hostname=hostname;if(networkCidr!=null&&!networkCidr.isBlank())this.networkCidr=networkCidr;if(interfaceName!=null&&!interfaceName.isBlank())this.interfaceName=interfaceName;if(macAddress!=null&&!macAddress.isBlank())this.macAddress=macAddress;if(deviceType!=null&&!deviceType.isBlank()&&"UNKNOWN".equals(this.deviceType))this.deviceType=deviceType;this.lastSeenAt=seenAt==null?Instant.now():seenAt;}
 	public void updateStatus(DeviceStatus status) { this.status = status; }
+	public void recordSeen(Instant at){this.lastSeenAt=at==null?Instant.now():at;}
 	public UUID getId() { return id; }
 	public String getName() { return name; }
 	public String getIpAddress() { return ipAddress; }
@@ -84,4 +90,5 @@ public class Device {
 	public boolean isMonitoringEnabled() { return monitoringEnabled; }
 	public Instant getCreatedAt() { return createdAt; }
 	public Instant getUpdatedAt() { return updatedAt; }
+	public String getNetworkCidr(){return networkCidr;} public String getInterfaceName(){return interfaceName;} public String getMacAddress(){return macAddress;} public Instant getLastSeenAt(){return lastSeenAt;}
 }

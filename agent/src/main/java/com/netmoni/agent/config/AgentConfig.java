@@ -46,11 +46,27 @@ public record AgentConfig(
         String snmpAuthPassphrase,
         String snmpPrivacyProtocol,
         String snmpPrivacyPassphrase,
-        int snmpTimeoutMs) {
+        int snmpTimeoutMs,
+        java.util.List<Ipv4Cidr> allowedCidrs) {
 
     public AgentConfig {
         tcpPorts = Arrays.copyOf(tcpPorts, tcpPorts.length);
         deviceIds = Map.copyOf(deviceIds);
+        allowedCidrs = java.util.List.copyOf(allowedCidrs);
+    }
+
+    public AgentConfig(UUID agentId,String name,String localIp,String networkInterfaceName,String macAddress,String version,
+            Ipv4Cidr subnet,String backendHost,int backendPort,int connectTimeoutMs,int readTimeoutMs,
+            int monitoringIntervalSeconds,int discoveryIntervalSeconds,int heartbeatIntervalSeconds,int retryIntervalSeconds,
+            int outboxFlushIntervalSeconds,int icmpTimeoutMs,int icmpRetries,int workerThreads,int[] tcpPorts,
+            Map<String,UUID> deviceIds,Path dataDirectory,boolean snmpEnabled,String snmpVersion,int snmpPort,
+            String snmpCommunity,String snmpSecurityName,String snmpAuthProtocol,String snmpAuthPassphrase,
+            String snmpPrivacyProtocol,String snmpPrivacyPassphrase,int snmpTimeoutMs) {
+        this(agentId,name,localIp,networkInterfaceName,macAddress,version,subnet,backendHost,backendPort,connectTimeoutMs,
+                readTimeoutMs,monitoringIntervalSeconds,discoveryIntervalSeconds,heartbeatIntervalSeconds,retryIntervalSeconds,
+                outboxFlushIntervalSeconds,icmpTimeoutMs,icmpRetries,workerThreads,tcpPorts,deviceIds,dataDirectory,snmpEnabled,
+                snmpVersion,snmpPort,snmpCommunity,snmpSecurityName,snmpAuthProtocol,snmpAuthPassphrase,snmpPrivacyProtocol,
+                snmpPrivacyPassphrase,snmpTimeoutMs,java.util.List.of(subnet));
     }
 
     @Override
@@ -65,7 +81,7 @@ public record AgentConfig(
                 + ", subnet=" + subnet + ", backendHost=" + backendHost + ", backendPort=" + backendPort
                 + ", monitoringIntervalSeconds=" + monitoringIntervalSeconds + ", discoveryIntervalSeconds="
                 + discoveryIntervalSeconds + ", heartbeatIntervalSeconds=" + heartbeatIntervalSeconds
-                + ", tcpPorts=" + Arrays.toString(tcpPorts) + ", snmpEnabled=" + snmpEnabled
+                + ", allowedCidrs=" + allowedCidrs + ", tcpPorts=" + Arrays.toString(tcpPorts) + ", snmpEnabled=" + snmpEnabled
                 + ", snmpVersion=" + snmpVersion + ", snmpPort=" + snmpPort + ", credentials=[REDACTED]]";
     }
 
@@ -108,6 +124,7 @@ public record AgentConfig(
         }
         LocalIdentity identity = resolveLocalIdentity(properties.getProperty("agent.local-ip", ""),
                 properties.getProperty("agent.network-interface", ""), subnet);
+        java.util.List<Ipv4Cidr> allowedCidrs = parseAllowedCidrs(properties.getProperty("agent.allowed-cidrs", subnet.toString()), subnet);
         String snmpVersion = properties.getProperty("agent.snmp.version", "2c").trim().toLowerCase();
         if (!snmpVersion.equals("1") && !snmpVersion.equals("2c") && !snmpVersion.equals("3")) {
             throw new IllegalArgumentException("SNMP version must be 1, 2c, or 3");
@@ -152,7 +169,7 @@ public record AgentConfig(
                 properties.getProperty("agent.snmp.community", ""),
                 snmpSecurityName, snmpAuthProtocol, snmpAuthPassphrase,
                 snmpPrivacyProtocol, snmpPrivacyPassphrase,
-                integer(properties, "agent.snmp.timeout-ms", 1, 120_000));
+                integer(properties, "agent.snmp.timeout-ms", 1, 120_000), allowedCidrs);
     }
 
     private static void applyEnvironment(Properties properties) {
@@ -163,6 +180,7 @@ public record AgentConfig(
         environment.put("NETMONI_AGENT_NETWORK_INTERFACE", "agent.network-interface");
         environment.put("NETMONI_AGENT_VERSION", "agent.version");
         environment.put("NETMONI_AGENT_SEGMENT_CIDR", "agent.segment-cidr");
+        environment.put("NETMONI_AGENT_ALLOWED_CIDRS", "agent.allowed-cidrs");
         environment.put("NETMONI_BACKEND_HOST", "agent.backend.host");
         environment.put("NETMONI_BACKEND_PORT", "agent.backend.port");
         environment.put("NETMONI_BACKEND_CONNECT_TIMEOUT_MS", "agent.backend.connect-timeout-ms");
@@ -239,6 +257,18 @@ public record AgentConfig(
     }
 
     private record LocalIdentity(String localIp, String interfaceName, String macAddress) { }
+
+    private static java.util.List<Ipv4Cidr> parseAllowedCidrs(String configured, Ipv4Cidr fallback) {
+        if (configured == null || configured.isBlank()) return java.util.List.of(fallback);
+        java.util.LinkedHashMap<String,Ipv4Cidr> cidrs=new java.util.LinkedHashMap<>();
+        for(String value:configured.split(",")) {
+            Ipv4Cidr cidr=Ipv4Cidr.parse(value.trim());
+            cidrs.put(cidr.toString(),cidr);
+            if(cidrs.size()>32)throw new IllegalArgumentException("agent.allowed-cidrs supports at most 32 networks");
+        }
+        cidrs.putIfAbsent(fallback.toString(),fallback);
+        return java.util.List.copyOf(cidrs.values());
+    }
 
     private static UUID loadAgentId(String configuredId, Path idFile) throws IOException {
         if (configuredId != null && !configuredId.isBlank()) {

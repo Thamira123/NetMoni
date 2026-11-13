@@ -10,6 +10,7 @@ import java.net.UnknownHostException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -29,12 +30,18 @@ public final class NetworkDiscovery {
     }
 
     public List<DiscoveredDevice> scan() {
-        return scan((checked,total)->{});
+        return scan(config.subnet(),(checked,total)->{});
     }
     public List<DiscoveredDevice> scan(BiConsumer<Integer,Integer> progress) {
+        return scan(config.subnet(),progress);
+    }
+    public List<DiscoveredDevice> scan(com.netmoni.agent.config.Ipv4Cidr subnet,BiConsumer<Integer,Integer> progress) {
+        return scan(subnet,null,progress);
+    }
+    public List<DiscoveredDevice> scan(com.netmoni.agent.config.Ipv4Cidr subnet,String interfaceName,BiConsumer<Integer,Integer> progress) {
         List<Future<DiscoveredDevice>> futures = new ArrayList<>();
-        for (String ip : config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS)) {
-            futures.add(workers.submit(() -> probe(ip)));
+        for (String ip : subnet.hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS)) {
+            futures.add(workers.submit(() -> probe(ip,subnet)));
         }
         List<DiscoveredDevice> devices = new ArrayList<>();
         AtomicInteger checked = new AtomicInteger();
@@ -53,10 +60,11 @@ public final class NetworkDiscovery {
                 progress.accept(checked.incrementAndGet(), futures.size());
             }
         }
-        return List.copyOf(devices);
+        Map<String,String> macs=ArpTable.read(subnet);
+        return devices.stream().map(d->new DiscoveredDevice(d.ipAddress(),d.hostname(),d.discoveredAt(),subnet.toString(),interfaceName,macs.get(d.ipAddress()),d.deviceType())).toList();
     }
 
-    private DiscoveredDevice probe(String ip) {
+    private DiscoveredDevice probe(String ip,com.netmoni.agent.config.Ipv4Cidr subnet) {
         try {
             InetAddress address = InetAddress.getByName(ip);
             if (!address.isReachable(config.icmpTimeoutMs()) && !hasOpenConfiguredPort(ip)) {
@@ -66,7 +74,7 @@ public final class NetworkDiscovery {
             if (hostname.equals(ip)) {
                 hostname = null;
             }
-            return new DiscoveredDevice(ip, hostname, Instant.now());
+            return new DiscoveredDevice(ip, hostname, Instant.now(), subnet.toString(), null, null, "UNKNOWN");
         } catch (IOException exception) {
             logger.debug("Could not discover {}: {}", ip, exception.getMessage());
             return null;

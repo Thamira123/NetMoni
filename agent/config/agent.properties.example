@@ -3,6 +3,9 @@ agent.local-ip=
 agent.network-interface=
 agent.version=1.0.0
 agent.segment-cidr=192.168.1.0/24
+# Networks the administrator has authorized this agent to discover (comma-separated).
+# Defaults to segment-cidr; the backend administrator must add the same CIDRs to the agent allowlist.
+agent.allowed-cidrs=192.168.1.0/24
 agent.backend.host=127.0.0.1
 agent.backend.port=9001
 agent.backend.connect-timeout-ms=3000

@@ -18,7 +18,7 @@ public class DeviceController {
 	private final DeviceService service;
 	public DeviceController(DeviceService service) { this.service = service; }
 	@PostMapping @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')") @ResponseStatus(HttpStatus.CREATED) public DeviceResponse create(@Valid @RequestBody DeviceRequest request) { return service.create(request); }
-	@GetMapping public PageResponse<DeviceResponse> findAll(@RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="50") int size) { return PageResponse.from(service.findAll(page,size)); }
+	@GetMapping public PageResponse<DeviceResponse> findAll(@RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="50") int size,@RequestParam(required=false) String search,@RequestParam(required=false) String networkCidr,@RequestParam(required=false) UUID agentId,@RequestParam(required=false) String deviceType,@RequestParam(required=false) DeviceStatus status,@RequestParam(defaultValue="createdAt") String sortBy,@RequestParam(defaultValue="desc") String direction) { return PageResponse.from(service.findAll(page,size,search,networkCidr,agentId,deviceType,status,sortBy,direction)); }
 	@GetMapping("/{id}") public DeviceResponse find(@PathVariable UUID id) { return service.find(id); }
 	@GetMapping("/by-agent/{agentId}") public List<DeviceResponse> byAgent(@PathVariable UUID agentId) { return service.findByAgent(agentId); }
 	@PutMapping("/{id}") @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')") public DeviceResponse update(@PathVariable UUID id, @Valid @RequestBody DeviceRequest request) { return service.update(id, request); }

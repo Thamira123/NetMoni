@@ -51,7 +51,8 @@ public class MonitoringResultService {
 		if(request.packetLossPercent()!=null&&request.packetLossPercent().compareTo(new java.math.BigDecimal("10.0"))>=0) alertService.create(new com.netmoni.server.dto.alert.AlertRequest(packetLossKey,"HIGH_PACKET_LOSS",com.netmoni.server.entity.AlertSeverity.WARNING,"Packet loss: "+request.packetLossPercent()+"%",device.getId(),agent.getId()));
 		else alertService.resolveByKey(packetLossKey);
 		DeviceStatus newStatus=request.available()?DeviceStatus.ONLINE:DeviceStatus.OFFLINE;
-		if(device.getStatus()!=newStatus){device.updateStatus(newStatus);devices.save(device);events.publish("/topic/devices","device.status.changed",java.util.Map.of("deviceId",device.getId(),"status",device.getStatus()));}
+		if(device.getStatus()!=newStatus){device.updateStatus(newStatus);events.publish("/topic/devices","device.status.changed",java.util.Map.of("deviceId",device.getId(),"status",device.getStatus()));}
+		device.recordSeen(request.checkedAt()); devices.save(device);
 		events.publish("/topic/monitoring", "monitoring.result.created", response);
 		events.publish("/topic/dashboard","dashboard.statistics.updated",java.util.Map.of("generatedAt",Instant.now()));
 		return response;

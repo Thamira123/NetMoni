@@ -46,3 +46,10 @@ Invalid inputs return HTTP 400, unknown resources HTTP 404, and unauthenticated 
 | GET | `/api/discovery/agents/{agentId}/devices` | Authenticated | Return registered devices for scan results. |
 
 Only one queued/running scan is allowed for an agent. Agents poll their command through `discovery.poll` on the agent TCP protocol; the dashboard cannot scan a subnet from the browser.
+
+Additional multi-network endpoints:
+
+- `GET /api/discovery/networks` and `GET /api/discovery/agents/{agentId}/networks` return persisted interface network details and scan eligibility.
+- `POST /api/discovery/agents/{agentId}/networks/{networkId}/scan` queues one network; `POST /api/discovery/scan` accepts `{ "networkIds": ["UUID", ...] }` to queue multiple authorized networks.
+- `GET /api/discovery/scans/{scanId}` and `/results` return per-network scan state and registered devices.
+- `PUT /api/agents/{agentId}/authorized-cidrs` (ADMIN) accepts `{ "cidrs": ["10.0.0.0/24"] }`. Agent TCP registration cannot expand this server-managed allowlist.

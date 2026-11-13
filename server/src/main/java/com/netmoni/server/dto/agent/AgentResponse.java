@@ -12,5 +12,7 @@ public record AgentResponse(
 		String version,
 		AgentStatus status,
 		Instant registeredAt,
-		Instant lastHeartbeat) {
+		Instant lastHeartbeat,
+		java.util.List<String> authorizedCidrs) {
+	public AgentResponse(UUID agentId,String name,String segmentCidr,String version,AgentStatus status,Instant registeredAt,Instant lastHeartbeat){this(agentId,name,segmentCidr,version,status,registeredAt,lastHeartbeat,java.util.List.of(segmentCidr));}
 }

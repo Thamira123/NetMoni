@@ -29,10 +29,12 @@ public record AgentTcpMessage(
 		Integer failed,
 		Long durationMs,
 		Integer newDevices,
-		Integer existingDevices) {
+		Integer existingDevices,
+		java.util.List<String> authorizedCidrs,
+		java.util.List<AgentNetworkRequest> networks) {
 	public AgentTcpMessage(String type, UUID agentId, String name, String segmentCidr, String version, UUID deviceId,
 		String checkType, Long responseTimeMs, Boolean available, BigDecimal packetLossPercent, Integer portNumber,
 		Boolean portOpen, String snmpData, Instant checkedAt, String errorMessage, List<DiscoveredDeviceRequest> devices) {
-		this(type,agentId,name,segmentCidr,version,deviceId,checkType,responseTimeMs,available,packetLossPercent,portNumber,portOpen,snmpData,checkedAt,errorMessage,devices,null,null,null,null,null,null,null,null);
+		this(type,agentId,name,segmentCidr,version,deviceId,checkType,responseTimeMs,available,packetLossPercent,portNumber,portOpen,snmpData,checkedAt,errorMessage,devices,null,null,null,null,null,null,null,null,null,null);
 	}
 }

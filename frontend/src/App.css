@@ -306,4 +306,22 @@
 .discovery-progress .status-track { height:8px; margin-top:12px; }
 .discovery-table { margin-top:0; }
 .discovery-last-scan { margin:0; color:#78857e; font-size:12px; }
+.network-picker { padding:20px; }
+.authorized-network-editor { padding:16px 20px; display:grid; gap:10px; }
+.authorized-network-editor summary { color:#263c32; font-size:13px; font-weight:700; cursor:pointer; }
+.authorized-network-editor p { margin:0; color:#78857e; font-size:12px; }
+.authorized-network-editor textarea { width:100%; resize:vertical; }
+.network-card-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.network-card { display:flex; align-items:flex-start; gap:12px; border:1px solid #e5ebe7; border-radius:10px; padding:14px; cursor:pointer; }
+.network-card input { margin-top:4px; accent-color:#287963; }
+.network-card-disabled { opacity:.68; cursor:not-allowed; background:#f7f8f7; }
+.network-card-content { display:grid; gap:5px; color:#65736b; font-size:12px; }
+.network-card-content strong { color:#263c32; font-size:14px; }
+.scan-job-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; color:#65736b; font-size:12px; }
+.scan-job-list span { padding:5px 8px; background:#f1f5f2; border-radius:5px; }
+.scan-job-list-detailed { display:grid; }
+.scan-job { display:grid; gap:7px; width:100%; }
+.scan-job > div:first-child { display:flex; justify-content:space-between; gap:12px; font-size:12px; }
+.scan-job .status-track { height:6px; }
 @media(max-width:700px){.discovery-controls{grid-template-columns:1fr}.discovery-note{grid-column:auto}.discovery-controls .button{width:100%}}
+@media(max-width:800px){.network-card-grid{grid-template-columns:1fr}.network-picker .full-table-heading{align-items:stretch;flex-direction:column}}

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.netmoni.agent.config.AgentConfig;
 import com.netmoni.agent.model.MonitoringResult;
 import com.netmoni.agent.model.DiscoveredDevice;
+import com.netmoni.agent.config.NetworkInterfaceDiscovery;
 import java.util.List;
 import java.util.UUID;
 
@@ -19,7 +20,22 @@ public final class ProtocolMessages {
         message.put("name", config.name());
         message.put("segmentCidr", config.subnet().toString());
         message.put("version", config.version());
+        addNetworks(message,config);
         return message;
+    }
+    public static ObjectNode networks(ObjectMapper mapper,AgentConfig config){ObjectNode m=mapper.createObjectNode();m.put("type","agent.networks");m.put("agentId",config.agentId().toString());addNetworks(m,config);return m;}
+    private static void addNetworks(ObjectNode message,AgentConfig config) {
+        var allowed=message.putArray("authorizedCidrs"); config.allowedCidrs().forEach(c->allowed.add(c.toString()));
+        var networks=message.putArray("networks");
+        for(var network:NetworkInterfaceDiscovery.discover(config.allowedCidrs())) {
+            var n=networks.addObject(); n.put("interfaceName",network.interfaceName()); n.put("displayName",network.displayName());
+            n.put("interfaceType",network.interfaceType()); n.put("interfaceStatus",network.interfaceStatus());
+            n.put("address",network.address()); n.put("cidr",network.cidr()); n.put("subnetMask",network.subnetMask());
+            if(network.broadcastAddress()!=null)n.put("broadcastAddress",network.broadcastAddress()); if(network.gateway()!=null)n.put("gateway",network.gateway());
+            if(network.macAddress()!=null)n.put("macAddress",network.macAddress()); if(network.ipv6Address()!=null)n.put("ipv6Address",network.ipv6Address());
+            if(network.ipv6PrefixLength()!=null)n.put("ipv6PrefixLength",network.ipv6PrefixLength()); n.put("authorized",network.authorized());
+            n.put("scanEligible",network.scanEligible()); n.put("lastDetectedAt",network.lastDetectedAt().toString());
+        }
     }
 
     public static ObjectNode heartbeat(ObjectMapper mapper, UUID agentId) {
@@ -43,6 +59,8 @@ public final class ProtocolMessages {
             entry.put("ipAddress", device.ipAddress());
             if (device.hostname() != null) entry.put("hostname", device.hostname());
             if (device.discoveredAt() != null) entry.put("discoveredAt", device.discoveredAt().toString());
+            if (device.networkCidr()!=null) entry.put("networkCidr",device.networkCidr()); if(device.interfaceName()!=null)entry.put("interfaceName",device.interfaceName());
+            if(device.macAddress()!=null)entry.put("macAddress",device.macAddress()); if(device.deviceType()!=null)entry.put("deviceType",device.deviceType());
         }
         return message;
     }

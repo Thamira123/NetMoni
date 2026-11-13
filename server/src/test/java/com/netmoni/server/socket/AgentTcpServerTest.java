@@ -46,7 +46,7 @@ class AgentTcpServerTest {
 
 	@Test void agentPollReceivesPersistedQueuedScanCommand() {
 		UUID agentId=UUID.randomUUID(), scanId=UUID.randomUUID();
-		DiscoveryScanService scans=mock(DiscoveryScanService.class); when(scans.poll(agentId)).thenReturn(scanId);
+		DiscoveryScanService scans=mock(DiscoveryScanService.class); when(scans.poll(agentId)).thenReturn(new com.netmoni.server.dto.discovery.DiscoveryScanCommand(scanId,null,"10.0.0.0/24"));
 		AgentRegistrationService registrations=mock(AgentRegistrationService.class);
 		when(registrations.getAgent(agentId)).thenReturn(new com.netmoni.server.dto.agent.AgentResponse(agentId,"edge","10.0.0.0/24","1",com.netmoni.server.entity.AgentStatus.ONLINE,java.time.Instant.now(),java.time.Instant.now()));
 		AgentTcpServer server=new AgentTcpServer(mock(ObjectMapper.class),registrations,mock(MonitoringResultService.class),mock(DeviceService.class),scans,"127.0.0.1",9001);

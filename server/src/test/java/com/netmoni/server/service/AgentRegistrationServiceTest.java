@@ -69,6 +69,10 @@ class AgentRegistrationServiceTest {
 		verify(agentRepository).save(existing);
 	}
 
+	@Test void agentHeartbeatRegistrationCannotExpandAdminAllowedRanges(){UUID id=UUID.randomUUID();Agent existing=new Agent(id,"edge","10.0.0.0/24","1",Instant.now());existing.updateAuthorizedCidrs(java.util.List.of("10.0.0.0/24"));when(agentRepository.findById(id)).thenReturn(Optional.of(existing));when(agentRepository.save(existing)).thenReturn(existing);
+		service.registerAgent(new AgentRegistrationRequest(id,"edge","192.168.1.0/24","1",java.util.List.of("10.0.0.0/24","192.168.1.0/24")),true);
+		assertEquals(java.util.List.of("10.0.0.0/24"),existing.getAuthorizedCidrs());assertEquals("10.0.0.0/24",existing.getSegmentCidr());}
+
 	@Test
 	void heartbeatForUnknownAgentFailsClearly() {
 		UUID agentId = UUID.randomUUID();

@@ -32,6 +32,7 @@ import com.netmoni.server.service.MonitoringResultService;
 import com.netmoni.server.dto.monitoring.MonitoringResultRequest;
 import com.netmoni.server.service.DeviceService;
 import com.netmoni.server.service.DiscoveryScanService;
+import com.netmoni.server.service.AgentNetworkService;
 import org.springframework.beans.factory.annotation.Autowired;
 
 @Component
@@ -44,6 +45,7 @@ public class AgentTcpServer {
 	private final MonitoringResultService monitoringResultService;
 	private final DeviceService deviceService;
 	private final DiscoveryScanService discoveryScanService;
+	private final AgentNetworkService agentNetworkService;
 	private final String host;
 	private final int port;
 	private final AtomicBoolean running = new AtomicBoolean(false);
@@ -57,6 +59,7 @@ public class AgentTcpServer {
 			MonitoringResultService monitoringResultService,
 			DeviceService deviceService,
 			DiscoveryScanService discoveryScanService,
+			AgentNetworkService agentNetworkService,
 			@Value("${netmoni.agent-server.host:127.0.0.1}") String host,
 			@Value("${netmoni.agent-server.port:9001}") int port) {
 		this.objectMapper = objectMapper;
@@ -64,13 +67,15 @@ public class AgentTcpServer {
 		this.monitoringResultService = monitoringResultService;
 		this.deviceService = deviceService;
 		this.discoveryScanService = discoveryScanService;
+		this.agentNetworkService = agentNetworkService;
 		this.host = host;
 		this.port = port;
 	}
 
 	AgentTcpServer(ObjectMapper mapper, AgentRegistrationService registrations, MonitoringResultService monitoring, DeviceService devices, String host, int port) {
-		this(mapper, registrations, monitoring, devices, null, host, port);
+		this(mapper, registrations, monitoring, devices, null, null, host, port);
 	}
+	AgentTcpServer(ObjectMapper mapper,AgentRegistrationService registrations,MonitoringResultService monitoring,DeviceService devices,DiscoveryScanService scans,String host,int port){this(mapper,registrations,monitoring,devices,scans,null,host,port);}
 
 	@PostConstruct
 	public void start() throws IOException {
@@ -127,11 +132,13 @@ public class AgentTcpServer {
 		try {
 			if ("agent.register".equals(message.type())) {
 				AgentRegistrationRequest request = new AgentRegistrationRequest(
-						message.agentId(), message.name(), message.segmentCidr(), message.version());
-				AgentResponse agent = agentRegistrationService.registerAgent(request);
+						message.agentId(), message.name(), message.segmentCidr(), message.version(),message.authorizedCidrs());
+				AgentResponse agent = agentRegistrationService.registerAgent(request,true);
+				if(agentNetworkService!=null)agentNetworkService.synchronize(message.agentId(),message.networks());
 				logger.info("Registered agent id={} name={}", agent.agentId(), agent.name());
 				return AgentTcpResponse.registered(agent);
 			}
+			if("agent.networks".equals(message.type())){agentRegistrationService.getAgent(message.agentId());agentNetworkService.synchronize(message.agentId(),message.networks());return AgentTcpResponse.networksAccepted(message.agentId());}
 			if ("agent.heartbeat".equals(message.type())) {
 				AgentResponse agent = agentRegistrationService.recordHeartbeat(message.agentId());
 				return AgentTcpResponse.heartbeat(agent);
@@ -148,8 +155,8 @@ public class AgentTcpServer {
 			}
 			if ("discovery.poll".equals(message.type())) {
 				agentRegistrationService.getAgent(message.agentId());
-				var scanId = discoveryScanService.poll(message.agentId());
-				return scanId == null ? AgentTcpResponse.scanIdle(message.agentId()) : AgentTcpResponse.scanCommand(message.agentId(), scanId);
+				var scan = discoveryScanService.poll(message.agentId());
+				return scan == null ? AgentTcpResponse.scanIdle(message.agentId()) : AgentTcpResponse.scanCommand(message.agentId(), scan);
 			}
 			if ("discovery.started".equals(message.type())) { discoveryScanService.started(message.agentId(), message.scanId()); return AgentTcpResponse.scanIdle(message.agentId()); }
 			if ("discovery.progress".equals(message.type())) { discoveryScanService.progress(message.agentId(), message.scanId(), value(message.progress()), value(message.checked()), value(message.discovered()), value(message.failed()), value(message.newDevices()), value(message.existingDevices())); return AgentTcpResponse.scanIdle(message.agentId()); }

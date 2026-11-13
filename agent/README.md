@@ -13,6 +13,7 @@ The agent follows the `backend` branch's `docs/agent-protocol.md`:
 - Result delivery is at-least-once: if the backend stores a result but the acknowledgement is lost, the agent retries it. The current backend protocol has no idempotency key.
 - The current backend is plain TCP (no TLS or agent credentials); its documented listener binds to loopback. Do not expose it to an untrusted network. TLS must be implemented on both sides before enabling it.
 - After registration, discovery sends reachable IPv4 addresses and reverse-DNS hostnames to the backend. The backend creates or updates devices for this agent and returns their stable UUIDs; repeated scans do not create duplicates. The dashboard refreshes from the backend device event.
+- The agent reports attached IPv4 interface networks at registration and every 60 seconds. Only CIDRs explicitly listed in `agent.allowed-cidrs` are marked as candidates, and the backend independently checks them against the administrator-managed allowlist. Admins edit that allowlist in Network Discovery before a network becomes scan eligible.
 - `agent.device-ids` is optional and can seed mappings for devices already registered to this agent. Newly discovered devices do not require manual UUID configuration. Discovery uses ICMP reachability and falls back to the configured TCP monitoring ports when ICMP is blocked.
 - A device is first stored with status `UNKNOWN`; the next ICMP/TCP/SNMP monitoring result changes it to `ONLINE` or `OFFLINE`. Discovery is limited to the configured, locally attached subnet.
 - The backend monitoring DTO stores the supported ICMP/TCP fields and an opaque `snmpData` string. The dashboard/backend do not currently expose interface metrics or a normalized SNMP metric model.
@@ -26,6 +27,8 @@ Copy `config/agent.properties.example` to `config/agent.properties` and edit the
 agent.name=segment-a
 agent.network-interface=
 agent.segment-cidr=192.168.1.0/24
+# Comma-separated networks approved for discovery by your administrator.
+agent.allowed-cidrs=192.168.1.0/24
 agent.backend.host=127.0.0.1
 agent.backend.port=9001
 # Optional mappings for devices already registered to this agent; discovery fills new mappings automatically.
@@ -42,7 +45,7 @@ agent.snmp.privacy-protocol=AES128
 agent.snmp.privacy-passphrase=
 ```
 
-`agent.device-ids` is an optional comma-separated `IPv4=UUID` list for pre-existing devices; automatically discovered mappings are returned by the backend at runtime. Each IP is checked against `agent.segment-cidr` before monitoring; the configured CIDR must be an authorized network you administer. Discovery is limited to 4096 usable IPv4 addresses per scan. Network/broadcast addresses are excluded for prefixes `/0` through `/30`.
+`agent.allowed-cidrs` is an optional comma-separated list of authorized local IPv4 networks. It defaults to `agent.segment-cidr`; include each locally attached network that the administrator has approved in the backend's Network Discovery page. The backend independently enforces its allowlist. Scans are capped at 4096 usable IPv4 addresses per network. `agent.device-ids` is an optional comma-separated `IPv4=UUID` list for pre-existing devices; automatically discovered mappings are returned by the backend at runtime. Each IP is checked against the configured authorized CIDRs before monitoring. Network/broadcast addresses are excluded for prefixes `/0` through `/30`.
 
 The agent generates a UUID once and persists it in `agent.data-directory/agent-id`; keep the data directory between restarts. Each property can be overridden with its corresponding `NETMONI_...` environment variable (for example, `NETMONI_AGENT_ID`, `NETMONI_AGENT_NETWORK_INTERFACE`, `NETMONI_BACKEND_HOST`, `NETMONI_MONITORING_INTERVAL_SECONDS`, `NETMONI_DEVICE_IDS`, and `NETMONI_SNMP_AUTH_PASSPHRASE`). Credentials are redacted from the configuration object's string representation and are never intentionally logged. The config path can also be given as the first command-line argument.
 

@@ -6,6 +6,8 @@ import com.netmoni.agent.communication.BackendClient;
 import com.netmoni.agent.communication.MessageOutbox;
 import com.netmoni.agent.communication.ProtocolMessages;
 import com.netmoni.agent.config.AgentConfig;
+import com.netmoni.agent.config.NetworkInterfaceDiscovery;
+import com.netmoni.agent.config.Ipv4Cidr;
 import com.netmoni.agent.discovery.NetworkDiscovery;
 import com.netmoni.agent.model.DiscoveredDevice;
 import com.netmoni.agent.model.MonitoringResult;
@@ -73,6 +75,7 @@ public final class AgentRuntime implements AutoCloseable {
         scheduler.scheduleWithFixedDelay(this::flushOutbox, 1,
                 config.outboxFlushIntervalSeconds(), TimeUnit.SECONDS);
         scheduler.scheduleWithFixedDelay(this::pollDiscoveryCommand, 2, 2, TimeUnit.SECONDS);
+        scheduler.scheduleWithFixedDelay(this::reportNetworks, 30, 60, TimeUnit.SECONDS);
     }
 
     private void register() {
@@ -102,18 +105,15 @@ public final class AgentRuntime implements AutoCloseable {
         if (!discoveryRunning.compareAndSet(false, true)) return;
         workers.execute(() -> {
             try {
-                List<DiscoveredDevice> found = discovery.scan();
-                if (found.isEmpty()) {
-                    logger.info("Discovery found no reachable devices in configured subnet");
-                    return;
+                int totalFound=0,registeredCount=0;
+                for(var network:NetworkInterfaceDiscovery.discover(config.allowedCidrs()).stream().filter(n->n.scanEligible()).toList()) {
+                    Ipv4Cidr cidr=Ipv4Cidr.parse(network.cidr());
+                    List<DiscoveredDevice> found=discovery.scan(cidr,network.interfaceName(),(checked,total)->{});
+                    if(found.isEmpty())continue;
+                    JsonNode ack=backend.send(ProtocolMessages.discoveredDevices(mapper,config.agentId(),found),"device.discovery.accepted");
+                    registeredCount+=mergeDeviceMappings(cidr,deviceIds,ack.path("devices")); totalFound+=found.size();
                 }
-                JsonNode acknowledgement = backend.send(
-                        ProtocolMessages.discoveredDevices(mapper, config.agentId(), found),
-                        "device.discovery.accepted");
-                int registeredCount = mergeDeviceMappings(config.subnet(), deviceIds,
-                        acknowledgement.path("devices"));
-                logger.info("Discovery found {} reachable device(s); {} registered with backend",
-                        found.size(), registeredCount);
+                logger.info("Discovery found {} reachable device(s); {} registered across authorized interfaces",totalFound,registeredCount);
                 monitorDevices();
             } catch (IOException exception) {
                 logger.warn("Could not register discovered devices; discovery will retry: {}", exception.getMessage());
@@ -125,27 +125,32 @@ public final class AgentRuntime implements AutoCloseable {
         });
     }
 
+    private void reportNetworks(){if(!registered.get())return;try{backend.send(ProtocolMessages.networks(mapper,config),"agent.networks.accepted");}catch(IOException e){logger.debug("Could not refresh network inventory: {}",e.getMessage());}}
+
     private void pollDiscoveryCommand() {
         if (!registered.get()) return;
         try {
             JsonNode response = backend.send(ProtocolMessages.discoveryCommand(mapper, config.agentId()), null);
             if ("discovery.command".equals(response.path("type").asText()) && response.hasNonNull("scanId")) {
                 UUID scanId = UUID.fromString(response.path("scanId").asText());
-                if (discoveryRunning.compareAndSet(false, true)) workers.execute(() -> runRequestedScan(scanId));
+                String cidr=response.path("networkCidr").asText("");
+                if (discoveryRunning.compareAndSet(false, true)) workers.execute(() -> runRequestedScan(scanId,cidr));
             }
         } catch (IOException | IllegalArgumentException exception) {
             logger.debug("Could not poll queued discovery command: {}", exception.getMessage());
         }
     }
 
-    private void runRequestedScan(UUID scanId) {
+    private void runRequestedScan(UUID scanId,String networkCidr) {
         long startedAt = System.nanoTime();
         AtomicInteger lastReported = new AtomicInteger(-1);
         AtomicInteger newDevices = new AtomicInteger();
         AtomicInteger existingDevices = new AtomicInteger();
         try {
+            Ipv4Cidr subnet=Ipv4Cidr.parse(networkCidr);
+            var network=NetworkInterfaceDiscovery.discover(config.allowedCidrs()).stream().filter(n->n.scanEligible()&&n.cidr().equals(networkCidr)).findFirst().orElseThrow(()->new IllegalArgumentException("Requested network is no longer an active authorized interface"));
             backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.started", 0, 0, 0, 0, 0, null), "discovery.idle");
-            List<DiscoveredDevice> found = discovery.scan((checked, total) -> {
+            List<DiscoveredDevice> found = discovery.scan(subnet,network.interfaceName(),(checked, total) -> {
                 int percent = total == 0 ? 100 : checked * 100 / total;
                 if (percent == 100 || percent / 5 > lastReported.get()) {
                     lastReported.set(percent / 5);
@@ -154,18 +159,18 @@ public final class AgentRuntime implements AutoCloseable {
                 }
             });
             if (!found.isEmpty()) {
-                int total = config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS).size();
+                int total = subnet.hosts(Ipv4Cidr.MAX_SCAN_HOSTS).size();
                 var ack = backend.send(ProtocolMessages.discoveredDevices(mapper, config.agentId(), found, scanId, 100, total, Math.max(0,total-found.size())), "device.discovery.accepted");
-                mergeDeviceMappings(config.subnet(), deviceIds, ack.path("devices"));
+                mergeDeviceMappings(subnet, deviceIds, ack.path("devices"));
                 for (JsonNode mapping : ack.path("devices")) {
                     if (mapping.path("created").asBoolean(false)) newDevices.incrementAndGet(); else existingDevices.incrementAndGet();
                 }
                 backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.progress", 100, total, found.size(), Math.max(0,total-found.size()), newDevices.get(), existingDevices.get(), 0, null), "discovery.idle");
             }
             long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-            int failed = Math.max(0, config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS).size() - found.size());
+            int checked=subnet.hosts(Ipv4Cidr.MAX_SCAN_HOSTS).size(); int failed = Math.max(0, checked - found.size());
             backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.completed", 100,
-                    config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS).size(), found.size(), failed,
+                    checked, found.size(), failed,
                     newDevices.get(), existingDevices.get(), duration, null), "discovery.idle");
             monitorDevices();
             logger.info("Dashboard scan {} completed: {} reachable device(s)", scanId, found.size());
@@ -214,7 +219,7 @@ public final class AgentRuntime implements AutoCloseable {
     }
 
     private void monitorDevice(String ip, UUID deviceId) throws IOException {
-        if (!config.subnet().contains(ip)) {
+        if (config.allowedCidrs().stream().noneMatch(c->c.contains(ip))) {
             logger.error("Skipping configured device outside authorized subnet: {}", ip);
             return;
         }
