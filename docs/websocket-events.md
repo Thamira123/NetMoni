@@ -7,5 +7,7 @@ Connect to `ws://localhost:8080/ws` using STOMP and subscribe to these topics. T
 - `/topic/monitoring`: `monitoring.result.created`
 - `/topic/alerts`: `alert.created`, `alert.read`, `alert.resolved`
 - `/topic/dashboard`: `dashboard.statistics.updated`
+- `/topic/discovery`: `discovery.started`, `discovery.progress`, `discovery.completed`, `discovery.failed`
+- `/topic/networks`: `network.discovered`, `network.updated`
 
 Event envelope: `{ "event": "monitoring.result.created", "timestamp": "<ISO-8601>", "data": { ... } }`. Event data is the same DTO shape returned by the corresponding REST resource. The built-in simple broker is for development; production deployments should use an authenticated, scalable broker and restrict allowed origins. Set `WEBSOCKET_ALLOWED_ORIGIN` to the exact frontend origin outside local development.

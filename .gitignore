@@ -19,6 +19,7 @@ logs/
 # Agent local credentials and queued monitoring data
 agent/config/agent.properties
 agent/data/
+server/.netmoni-jwt-secret
 
 # OS
 .DS_Store

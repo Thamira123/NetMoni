@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -43,4 +44,6 @@ public class AgentController {
 	public AgentResponse getAgent(@PathVariable UUID agentId) {
 		return agentRegistrationService.getAgent(agentId);
 	}
+	@PutMapping("/{agentId}/authorized-cidrs") @PreAuthorize("hasRole('ADMIN')")
+	public AgentResponse authorizedCidrs(@PathVariable UUID agentId,@RequestBody com.netmoni.server.dto.agent.AuthorizedCidrsRequest request){return agentRegistrationService.updateAuthorizedCidrs(agentId,request.cidrs());}
 }

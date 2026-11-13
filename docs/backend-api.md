@@ -19,6 +19,7 @@ For browser clients hosted on a separate origin, configure `FRONTEND_ALLOWED_ORI
 - `POST /api/devices` (ADMIN/OPERATOR) and `PUT /api/devices/{id}` accept name, ipAddress, optional hostname, deviceType, optional location, and agentId.
 - `GET /api/devices?page=0&size=50`, `GET /api/devices/{id}`, `GET /api/devices/by-agent/{agentId}` (main list size max 100)
 - `PATCH /api/devices/{id}/status?status=ONLINE|OFFLINE|UNKNOWN` (ADMIN/OPERATOR)
+- `PATCH /api/devices/{id}/monitoring` with `{ "enabled": false }` pauses checks; `{ "enabled": true }` resumes them (ADMIN/OPERATOR). Agents receive the enabled-device target list on their next poll.
 - `DELETE /api/devices/{id}` (ADMIN)
 
 ## Monitoring results
@@ -36,3 +37,20 @@ For browser clients hosted on a separate origin, configure `FRONTEND_ALLOWED_ORI
 - `GET /api/alerts?status=UNREAD&severity=CRITICAL&page=0&size=50`, `PATCH /api/alerts/{id}/read`, `PATCH /api/alerts/{id}/resolve` (page size max 100). Severity values are `INFO`, `WARNING`, and `CRITICAL`.
 
 Invalid inputs return HTTP 400, unknown resources HTTP 404, and unauthenticated requests HTTP 401. Authenticated users without a required role receive HTTP 403.
+# Network discovery
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/api/discovery/agents/{agentId}/scan` | ADMIN, OPERATOR | Queue a scan for an online agent (202 Accepted). |
+| GET | `/api/discovery/agents/{agentId}/scan` | Authenticated | Return the latest scan or 204 when none exists. |
+| GET | `/api/discovery/agents/{agentId}/scans` | Authenticated | Return the latest 20 scans. |
+| GET | `/api/discovery/agents/{agentId}/devices` | Authenticated | Return registered devices for scan results. |
+
+Only one queued/running scan is allowed for an agent. Agents poll their command through `discovery.poll` on the agent TCP protocol; the dashboard cannot scan a subnet from the browser.
+
+Additional multi-network endpoints:
+
+- `GET /api/discovery/networks` and `GET /api/discovery/agents/{agentId}/networks` return persisted interface network details and scan eligibility.
+- `POST /api/discovery/agents/{agentId}/networks/{networkId}/scan` queues one network; `POST /api/discovery/scan` accepts `{ "networkIds": ["UUID", ...] }` to queue multiple authorized networks.
+- `GET /api/discovery/scans/{scanId}` and `/results` return per-network scan state and registered devices.
+- `PUT /api/agents/{agentId}/authorized-cidrs` (ADMIN) accepts `{ "cidrs": ["10.0.0.0/24"] }`. Agent TCP registration cannot expand this server-managed allowlist.

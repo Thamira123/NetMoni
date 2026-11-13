@@ -15,12 +15,13 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 @Entity
 @Table(name = "devices", indexes = {
 		@Index(name = "idx_devices_agent_id", columnList = "agent_id"),
 		@Index(name = "idx_devices_status", columnList = "status")
-})
+}, uniqueConstraints = @UniqueConstraint(name = "uk_devices_agent_ip_address", columnNames = {"agent_id", "ip_address"}))
 public class Device {
 	@Id
 	private UUID id;
@@ -34,6 +35,10 @@ public class Device {
 	private String deviceType;
 	@Column(length = 160)
 	private String location;
+	@Column(name="network_cidr",length=50) private String networkCidr;
+	@Column(name="interface_name",length=120) private String interfaceName;
+	@Column(name="mac_address",length=24) private String macAddress;
+	@Column(name="last_seen_at") private Instant lastSeenAt;
 	@ManyToOne(fetch = FetchType.LAZY, optional = false)
 	@JoinColumn(name = "agent_id", nullable = false)
 	private Agent agent;
@@ -68,7 +73,13 @@ public class Device {
 		this.name = name; this.ipAddress = ipAddress; this.hostname = hostname;
 		this.deviceType = deviceType; this.location = location; this.agent = agent;
 	}
+	public void updateDiscoveredHostname(String hostname) {
+		if (hostname != null && !hostname.isBlank()) this.hostname = hostname;
+	}
+	public void updateDiscoveryMetadata(String hostname,String networkCidr,String interfaceName,String macAddress,String deviceType,Instant seenAt){if(hostname!=null&&!hostname.isBlank())this.hostname=hostname;if(networkCidr!=null&&!networkCidr.isBlank())this.networkCidr=networkCidr;if(interfaceName!=null&&!interfaceName.isBlank())this.interfaceName=interfaceName;if(macAddress!=null&&!macAddress.isBlank())this.macAddress=macAddress;if(deviceType!=null&&!deviceType.isBlank()&&"UNKNOWN".equals(this.deviceType))this.deviceType=deviceType;this.lastSeenAt=seenAt==null?Instant.now():seenAt;}
 	public void updateStatus(DeviceStatus status) { this.status = status; }
+	public void updateMonitoringEnabled(boolean enabled) { this.monitoringEnabled = enabled; }
+	public void recordSeen(Instant at){this.lastSeenAt=at==null?Instant.now():at;}
 	public UUID getId() { return id; }
 	public String getName() { return name; }
 	public String getIpAddress() { return ipAddress; }
@@ -80,4 +91,5 @@ public class Device {
 	public boolean isMonitoringEnabled() { return monitoringEnabled; }
 	public Instant getCreatedAt() { return createdAt; }
 	public Instant getUpdatedAt() { return updatedAt; }
+	public String getNetworkCidr(){return networkCidr;} public String getInterfaceName(){return interfaceName;} public String getMacAddress(){return macAddress;} public Instant getLastSeenAt(){return lastSeenAt;}
 }

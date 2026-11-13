@@ -36,6 +36,8 @@ public class Agent {
 
 	@Column(name = "last_heartbeat")
 	private Instant lastHeartbeat;
+	@Column(name="authorized_cidrs",length=2048)
+	private String authorizedCidrs;
 
 	protected Agent() {
 	}
@@ -44,6 +46,7 @@ public class Agent {
 		this.id = id;
 		this.name = name;
 		this.segmentCidr = segmentCidr;
+		this.authorizedCidrs = segmentCidr;
 		this.version = version;
 		this.registeredAt = registeredAt;
 		this.status = AgentStatus.ONLINE;
@@ -51,12 +54,17 @@ public class Agent {
 	}
 
 	public void updateRegistration(String name, String segmentCidr, String version, Instant now) {
+		updateRegistration(name,segmentCidr,version,java.util.List.of(segmentCidr),now);
+	}
+	public void updateRegistration(String name, String segmentCidr, String version, java.util.List<String> authorizedCidrs, Instant now) {
 		this.name = name;
 		this.segmentCidr = segmentCidr;
+		this.authorizedCidrs = String.join(",",authorizedCidrs);
 		this.version = version;
 		this.status = AgentStatus.ONLINE;
 		this.lastHeartbeat = now;
 	}
+	public void updateAuthorizedCidrs(java.util.List<String> cidrs){this.authorizedCidrs=String.join(",",cidrs);}
 
 	public void recordHeartbeat(Instant now) {
 		this.status = AgentStatus.ONLINE;
@@ -76,6 +84,7 @@ public class Agent {
 	public String getSegmentCidr() {
 		return segmentCidr;
 	}
+	public java.util.List<String> getAuthorizedCidrs(){return authorizedCidrs==null||authorizedCidrs.isBlank()?java.util.List.of(segmentCidr):java.util.Arrays.stream(authorizedCidrs.split(",")).map(String::trim).toList();}
 
 	public String getVersion() {
 		return version;
