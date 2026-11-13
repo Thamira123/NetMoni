@@ -47,6 +47,27 @@ catch {
     # No healthy NetMoni instance is responding; continue with startup.
 }
 
+$databaseUrl = if ([string]::IsNullOrWhiteSpace($env:DB_URL)) {
+    "jdbc:postgresql://localhost:5432/netmoni"
+} else {
+    $env:DB_URL
+}
+$databaseUri = $null
+if (-not [Uri]::TryCreate(($databaseUrl -replace '^jdbc:', ''), [UriKind]::Absolute, [ref]$databaseUri)) {
+    throw "DB_URL is not a valid PostgreSQL JDBC URL: $databaseUrl"
+}
+$databaseHost = $databaseUri.Host
+$databasePort = $databaseUri.Port
+if (-not (Test-NetConnection -ComputerName $databaseHost -Port $databasePort -InformationLevel Quiet -WarningAction SilentlyContinue)) {
+    $postgresService = Get-Service -Name 'postgresql-*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -ne 'Running' } |
+        Select-Object -First 1
+    if ($postgresService) {
+        throw "Cannot connect to PostgreSQL at ${databaseHost}:$databasePort. Windows service '$($postgresService.Name)' is $($postgresService.Status). Start PostgreSQL first. If it fails to start, repair its timezone files/configuration, then rerun this script."
+    }
+    throw "Cannot connect to PostgreSQL at ${databaseHost}:$databasePort. Confirm that PostgreSQL is installed and running, and that DB_URL points to the correct host and port."
+}
+
 $dbUsername = if ([string]::IsNullOrWhiteSpace($env:DB_USERNAME)) { "postgres" } else { $env:DB_USERNAME }
 $securePassword = Read-Host "Enter the PostgreSQL password for user $dbUsername" -AsSecureString
 if ($securePassword.Length -eq 0) {

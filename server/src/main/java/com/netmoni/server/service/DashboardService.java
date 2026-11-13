@@ -25,6 +25,6 @@ public class DashboardService {
 		long up=results.countByAvailableTrueAndCheckedAtAfter(since);
 		return new DashboardSummary(agents.count(), agents.countByStatus(AgentStatus.ONLINE), agents.countByStatus(AgentStatus.OFFLINE),
 				devices.countByMonitoringEnabledTrue(), devices.countByStatus(DeviceStatus.ONLINE), devices.countByStatus(DeviceStatus.OFFLINE),
-				checked==0?0:100.0*up/checked, Instant.now(), resultService.recentActivities(20));
+				checked==0?null:100.0*up/checked, Instant.now(), resultService.recentActivities(20));
 	}
 }

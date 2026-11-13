@@ -10,6 +10,7 @@ Environment variables:
 - `JWT_SECRET` (use a private random value at least 32 bytes long. `run-backend.ps1` creates a temporary random secret per run if this variable is unset; set it yourself if tokens should remain valid after a restart), `JWT_LIFETIME_SECONDS` (default 3600)
 - Optional first ADMIN creation: `BOOTSTRAP_ADMIN_ENABLED=true`, `BOOTSTRAP_ADMIN_USERNAME`, and `BOOTSTRAP_ADMIN_PASSWORD` (at least 10 characters). Turn it off after the first account is created. Public signup only creates VIEWERs.
 - `AGENT_HEARTBEAT_TIMEOUT_SECONDS` (default 90), `AGENT_STATUS_CHECK_INTERVAL_MS` (default 15000)
+- `FRONTEND_ALLOWED_ORIGINS` (comma-separated exact REST API origins; default `http://localhost:5173`), `WEBSOCKET_ALLOWED_ORIGIN` (WebSocket origin; default `http://localhost:5173`)
 - Email is off by default. To enable critical-alert mail set `EMAIL_ALERTS_ENABLED=true`, `ALERT_EMAIL_RECIPIENT`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_AUTH`, and `SMTP_STARTTLS`.
 
 Register a viewer via `POST /api/auth/register`, then use the returned bearer token for authenticated requests. Public signup cannot create ADMIN or OPERATOR accounts; use the one-time bootstrap variables for the first ADMIN. Run database-independent service tests with `./mvnw test -Dtest='*Test'`. The application itself still requires PostgreSQL to start because JPA is configured for PostgreSQL.

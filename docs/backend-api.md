@@ -1,6 +1,8 @@
 # Backend API
 
-Base URL: `http://localhost:8080`. All endpoints except health and authentication require `Authorization: Bearer <token>`.
+Base URL: `http://localhost:8080`. All REST endpoints except health and authentication require `Authorization: Bearer <token>`. WebSocket clients send the bearer token in the STOMP `CONNECT` frame; see [WebSocket events](websocket-events.md).
+
+For browser clients hosted on a separate origin, configure `FRONTEND_ALLOWED_ORIGINS` as a comma-separated list of exact origins. The API allows the required JSON and bearer headers without cookie credentials.
 
 ## Authentication
 
@@ -29,8 +31,8 @@ Base URL: `http://localhost:8080`. All endpoints except health and authenticatio
 
 ## Dashboard and alerts
 
-- `GET /api/dashboard/summary` returns agent/device counts, 24-hour result availability, and 20 recent results.
+- `GET /api/dashboard/summary` returns agent/device counts, 24-hour result availability, and 20 recent results. `availabilityPercent24h` is `null` until at least one check has been recorded in the last 24 hours.
 - `POST /api/alerts` (ADMIN/OPERATOR) accepts deduplicationKey, type, severity, message, optional deviceId/agentId. Repeated unresolved keys return the existing alert.
-- `GET /api/alerts?status=UNREAD&severity=CRITICAL&page=0&size=50`, `PATCH /api/alerts/{id}/read`, `PATCH /api/alerts/{id}/resolve` (page size max 100).
+- `GET /api/alerts?status=UNREAD&severity=CRITICAL&page=0&size=50`, `PATCH /api/alerts/{id}/read`, `PATCH /api/alerts/{id}/resolve` (page size max 100). Severity values are `INFO`, `WARNING`, and `CRITICAL`.
 
 Invalid inputs return HTTP 400, unknown resources HTTP 404, and unauthenticated requests HTTP 401. Authenticated users without a required role receive HTTP 403.

@@ -6,4 +6,4 @@ import com.netmoni.server.dto.monitoring.MonitoringResultResponse;
 
 public record DashboardSummary(long totalAgents, long onlineAgents, long offlineAgents,
 		long totalMonitoredDevices, long onlineDevices, long offlineDevices,
-		double availabilityPercent24h, Instant generatedAt, List<MonitoringResultResponse> recentActivities) {}
+		Double availabilityPercent24h, Instant generatedAt, List<MonitoringResultResponse> recentActivities) {}
