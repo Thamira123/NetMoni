@@ -5,10 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.netmoni.agent.config.AgentConfig;
 import com.netmoni.agent.config.Ipv4Cidr;
 import com.netmoni.agent.model.MonitoringResult;
+import com.netmoni.agent.model.DiscoveredDevice;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -32,5 +34,19 @@ class ProtocolMessagesTest {
         assertEquals("monitoring.result", json.path("type").asText());
         assertEquals(12L, json.path("responseTimeMs").asLong());
         assertEquals("2026-11-12T12:00:00Z", json.path("checkedAt").asText());
+    }
+
+    @Test
+    void buildsDiscoveredDeviceBatchForBackendRegistration() {
+        var discoveredAt = Instant.parse("2026-11-13T12:00:00Z");
+        var device = new DiscoveredDevice("192.168.1.20", "printer-20", discoveredAt);
+
+        var message = ProtocolMessages.discoveredDevices(mapper, agentId, List.of(device));
+
+        assertEquals("device.discovered", message.path("type").asText());
+        assertEquals(agentId.toString(), message.path("agentId").asText());
+        assertEquals("192.168.1.20", message.path("devices").get(0).path("ipAddress").asText());
+        assertEquals("printer-20", message.path("devices").get(0).path("hostname").asText());
+        assertEquals(discoveredAt.toString(), message.path("devices").get(0).path("discoveredAt").asText());
     }
 }

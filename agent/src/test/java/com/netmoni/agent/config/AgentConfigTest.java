@@ -62,6 +62,19 @@ class AgentConfigTest {
         assertFalse(config.toString().contains("privacy-secret-123"));
     }
 
+    @Test void loadsExplicitAuthorizedCidrsForMoreThanOneInterfaceNetwork() throws Exception {
+        var configFile=tempDirectory.resolve("multi-network.properties");
+        Files.writeString(configFile,"""
+                agent.local-ip=127.0.0.1
+                agent.segment-cidr=127.0.0.1/32
+                agent.allowed-cidrs=127.0.0.1/32,10.20.0.0/24,192.168.40.0/24
+                agent.data-directory=%s
+                """.formatted(tempDirectory.resolve("multi").toString().replace("\\","\\\\")));
+        AgentConfig config=AgentConfig.load(configFile);
+        assertEquals(3,config.allowedCidrs().size());
+        assertTrue(config.allowedCidrs().contains(Ipv4Cidr.parse("10.20.0.0/24")));
+    }
+
     @Test
     void rejectsMissingExplicitConfigurationFile() {
         assertThrows(java.io.IOException.class,
