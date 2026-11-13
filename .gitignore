@@ -1,0 +1,25 @@
+﻿# Java
+*.class
+*.jar
+target/
+.idea/
+*.iml
+
+# Node
+node_modules/
+dist/
+build/
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Agent local credentials and queued monitoring data
+agent/config/agent.properties
+agent/data/
+
+# OS
+.DS_Store
+Thumbs.db
