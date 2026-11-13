@@ -76,15 +76,24 @@ if ($securePassword.Length -eq 0) {
 $env:DB_PASSWORD = [System.Net.NetworkCredential]::new("", $securePassword).Password
 
 if ([string]::IsNullOrWhiteSpace($env:JWT_SECRET)) {
-    $randomBytes = New-Object byte[] 48
-    $randomGenerator = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-    try {
-        $randomGenerator.GetBytes($randomBytes)
-        $env:JWT_SECRET = [Convert]::ToBase64String($randomBytes)
+    $jwtSecretPath = Join-Path $PSScriptRoot ".netmoni-jwt-secret"
+    if (Test-Path -LiteralPath $jwtSecretPath) {
+        $env:JWT_SECRET = [System.IO.File]::ReadAllText($jwtSecretPath).Trim()
+    } else {
+        $randomBytes = New-Object byte[] 48
+        $randomGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try {
+            $randomGenerator.GetBytes($randomBytes)
+            $env:JWT_SECRET = [Convert]::ToBase64String($randomBytes)
+            Set-Content -LiteralPath $jwtSecretPath -Value $env:JWT_SECRET -NoNewline -Encoding ascii
+        }
+        finally {
+            $randomGenerator.Dispose()
+        }
     }
-    finally {
-        $randomGenerator.Dispose()
-    }
+}
+if ($env:JWT_SECRET.Length -lt 32) {
+    throw "JWT_SECRET in .netmoni-jwt-secret must contain at least 32 characters. Remove that local file to generate a new secret."
 }
 
 Push-Location $PSScriptRoot

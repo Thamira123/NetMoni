@@ -115,6 +115,23 @@ describe('NetMoni application', () => {
     expect(await screen.findByRole('button', { name: 'Scan in progress' })).toBeDisabled()
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/discovery/scan', expect.objectContaining({ method: 'POST' })))
   })
+
+  it('returns to sign in when the network inventory request has an invalid session', async () => {
+    sessionStorage.setItem('netmoni-session', JSON.stringify({ accessToken: 'stale-jwt', username: 'operator@example.com', role: 'OPERATOR', expiresAt: '2099-01-01T00:00:00Z' }))
+    const existingFetch = vi.mocked(fetch)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), window.location.origin)
+      if (url.pathname === '/api/discovery/networks') return new Response('', { status: 401 })
+      return existingFetch(input, init)
+    }))
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Good network, good day.' })
+    const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    fireEvent.click(within(navigation).getByRole('button', { name: /Network discovery/ }))
+    expect(await screen.findByRole('heading', { name: 'Sign in to NetMoni' })).toBeInTheDocument()
+    expect(screen.getByText(/session expired or is no longer valid/i)).toBeInTheDocument()
+    expect(sessionStorage.getItem('netmoni-session')).toBeNull()
+  })
 })
 
 function initMethod(_input: RequestInfo | URL, init?: RequestInit) {

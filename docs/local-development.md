@@ -22,7 +22,7 @@ $env:BOOTSTRAP_ADMIN_PASSWORD = 'choose-a-private-password-of-10-or-more-charact
 ./run-backend.ps1
 ```
 
-Use your own password; do not commit it or share it. After the first account is created, turn bootstrap off in that terminal or leave it disabled on subsequent starts. The script generates a temporary JWT signing secret when `JWT_SECRET` is not set.
+Use your own password; do not commit it or share it. After the first account is created, turn bootstrap off in that terminal or leave it disabled on subsequent starts. When `JWT_SECRET` is not set, the script creates a private local signing key at `server/.netmoni-jwt-secret` and reuses it after backend restarts, so existing browser sessions remain valid.
 
 Wait for `Started NetMoniServerApplication` and `Agent TCP server listening on 127.0.0.1:9001` before continuing.
 
@@ -40,7 +40,7 @@ Open the Vite URL, normally `http://localhost:5173`, and either register a VIEWE
 
 ## 3. Register the agent
 
-Copy `agent/config/agent.properties.example` to `agent/config/agent.properties`. Set `agent.segment-cidr` to an IPv4 subnet on an active network interface that you administer. Keep the local default backend address `127.0.0.1:9001` when running the agent and server on the same computer. Leave `agent.device-ids` empty for this first start.
+Copy `agent/config/agent.properties.example` to `agent/config/agent.properties`. Set `agent.segment-cidr` and `agent.allowed-cidrs` to IPv4 networks on active interfaces that you administer. The agent and server must run on the same host for the default backend address `127.0.0.1:9001`; for separate hosts, configure a reachable private address and a trusted firewall path. Leave `agent.device-ids` empty for this first start.
 
 From the project root, build and start the agent (Maven must be installed):
 
@@ -49,13 +49,13 @@ mvn -f agent/pom.xml package
 java -jar agent/target/netmoni-agent-1.0.0.jar agent/config/agent.properties
 ```
 
-The agent registers itself and sends heartbeats. It stores its generated ID under `agent/data`; keep that directory between restarts. Confirm the agent appears online in the dashboard's Agents view.
+The agent registers itself, reports its local networks, and sends heartbeats. It stores its generated ID under `agent/data`; keep that directory between restarts. In Network Discovery, an ADMIN must authorize each intended CIDR for the agent. The CIDR must also appear in the agent's local `agent.allowed-cidrs`. Confirm each interface shows `Authorized` and `Scan eligible` before starting a scan.
 
 ## 4. Confirm automatic registration and monitoring
 
-No dashboard device entry or UUID copy is needed for devices the agent discovers. After it registers, the agent scans its configured subnet, sends reachable IPv4 addresses and hostnames to the server, and receives the database device UUIDs. The server stores each `(agent, IP)` once and sends a WebSocket event; the open dashboard refreshes its Devices view. The agent then submits ICMP/TCP results using those returned IDs. Devices start as `UNKNOWN` and change to `ONLINE` or `OFFLINE` after the first check.
+No dashboard device entry or UUID copy is needed for devices the agent discovers. The agent automatically scans each locally configured authorized network, and you can start one or several eligible networks from Network Discovery. The agent sends reachable IPv4 addresses and hostnames to the server and receives database UUIDs. The server stores each `(agent, IP)` once and sends WebSocket updates; the dashboard shows the actual per-network scan progress and discovered inventory. The agent monitors enabled devices using those UUIDs. Devices start as `UNKNOWN` and change to `ONLINE` or `OFFLINE` after the first check. Operators and admins can pause or resume monitoring from Devices; agents apply the change on their next command poll.
 
-The scan uses ICMP reachability and tries the configured `agent.tcp.ports` if ICMP is blocked. Set `agent.segment-cidr` to the correct IPv4 network on an active interface; only scan networks you administer. Discovery is capped at 4096 usable IPv4 addresses per scan. The agent repeats discovery at `agent.discovery.interval-seconds` (default 300), so newly reachable devices appear on a later scan.
+The scan uses ICMP reachability and tries the configured `agent.tcp.ports` if ICMP is blocked. Only scan networks you administer. Each network is capped at 4096 usable IPv4 addresses. The agent repeats background discovery at `agent.discovery.interval-seconds` (default 300), so newly reachable devices appear on a later scan.
 
 The optional `agent.device-ids` setting remains available for pre-existing devices. Its comma-separated `IP=UUID` entries are merged with automatically returned IDs. See [the wire protocol](agent-protocol.md) for the discovery request and acknowledgement.
 

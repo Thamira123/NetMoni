@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Client } from '@stomp/stompjs'
 import {
   Activity, AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight, Bell,
@@ -109,6 +109,7 @@ function App() {
   const [live, setLive] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [authNotice, setAuthNotice] = useState('')
   const [search, setSearch] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
   const [discoveryRevision, setDiscoveryRevision] = useState(0)
@@ -125,6 +126,11 @@ function App() {
   const [detailResults, setDetailResults] = useState<MonitoringResult[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
 
+  const expireSession = useCallback(() => {
+    sessionStorage.removeItem('netmoni-session')
+    setSession(null); setSnapshot(null); setAuthNotice('Your session expired or is no longer valid. Sign in again to load network discovery.')
+  }, [])
+
   useEffect(() => {
     if (!session) return
     let active = true
@@ -136,8 +142,7 @@ function App() {
         if (active) { setSnapshot(next); setError('') }
       } catch (reason) {
         if (active && reason instanceof ApiError && reason.status === 401) {
-          sessionStorage.removeItem('netmoni-session')
-          setSession(null); setSnapshot(null); setError('Your session expired. Sign in again.')
+          expireSession()
         } else if (active) setError(reason instanceof Error ? reason.message : 'Unable to reach the API')
       } finally { if (active) setLoading(false) }
     }
@@ -212,7 +217,7 @@ function App() {
     finally { setDetailLoading(false) }
   }
 
-  if (!session) return <AuthScreen onAuthenticated={setSession} />
+  if (!session) return <AuthScreen notice={authNotice} onAuthenticated={(next) => { setAuthNotice(''); setSession(next) }} />
   const summary = snapshot?.summary
   const title = navItems.find((item) => item.key === view)?.label
     ?? (view === 'device-detail' ? 'Device details' : view === 'agent-detail' ? 'Agent details' : 'Overview')
@@ -252,7 +257,7 @@ function App() {
         {snapshot && view === 'overview' && overviewSnapshot && <Overview summary={summary} snapshot={overviewSnapshot} onNavigate={setView} onAlertAction={updateAlert} />}
         {snapshot && view === 'devices' && <DevicesView devices={matchingDevices} total={snapshot.deviceTotal} page={devicePageNumber} onPageChange={setDevicePageNumber} canManage={session.role !== 'VIEWER'} canDelete={session.role === 'ADMIN'} agents={snapshot.agents} onOpenDevice={openDevice} onOpenAgent={openAgent} onNavigate={setView} token={session.accessToken} onChanged={() => setRefreshKey((key) => key + 1)} onError={setError} />}
         {snapshot && view === 'agents' && <AgentsView agents={matchingAgents} total={snapshot.agentTotal} page={agentPageNumber} onPageChange={setAgentPageNumber} onOpenAgent={openAgent} token={session.accessToken} onNavigate={setView} />}
-        {snapshot && view === 'network-discovery' && <NetworkDiscoveryView agents={snapshot.agents} token={session.accessToken} canManage={session.role !== 'VIEWER'} isAdmin={session.role==='ADMIN'} revision={discoveryRevision} onError={setError} />}
+        {snapshot && view === 'network-discovery' && <NetworkDiscoveryView agents={snapshot.agents} token={session.accessToken} canManage={session.role !== 'VIEWER'} isAdmin={session.role==='ADMIN'} revision={discoveryRevision} onError={setError} onUnauthorized={expireSession} />}
         {snapshot && view === 'monitoring' && <MonitoringView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} onOpenDevice={openDevice} />}
         {snapshot && view === 'alerts' && <AlertsView alerts={snapshot.alerts} total={snapshot.alertTotal} page={alertPageNumber} onPageChange={setAlertPageNumber} onAlertAction={updateAlert} canResolve={session.role !== 'VIEWER'} />}
         {snapshot && view === 'reports' && <ReportsView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} />}
@@ -269,7 +274,7 @@ function pageDescription(view: ViewKey) {
     overview: 'A clear view of your infrastructure, all in one place.',
     devices: 'Every monitored endpoint across your network.',
     agents: 'Collectors reporting into your monitoring network.',
-    'network-discovery': 'Scan an agent subnet and automatically register reachable devices.',
+    'network-discovery': 'Inspect authorized interface networks, scan selected subnets, and track device registration live.',
     monitoring: 'Recent checks and results received from monitoring agents.',
     alerts: 'Events that need a closer look from your team.',
     reports: 'Availability and response trends from real monitoring results.',
@@ -279,7 +284,7 @@ function pageDescription(view: ViewKey) {
   return descriptions[view]
 }
 
-function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
+function AuthScreen({ onAuthenticated, notice }: { onAuthenticated: (session: AuthSession) => void; notice?: string }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -304,7 +309,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSessio
     <div className="auth-topline"><div className="brand-mark"><Network size={20} strokeWidth={2.2} /></div><span>NETMONI <i>/</i> NETWORK INTELLIGENCE</span><span className="auth-region"><span className="footer-dot" /> LOCAL INSTANCE</span></div>
     <div className="auth-layout">
       <section className="auth-story"><div className="auth-story-label"><span className="status-pulse" /> MONITORING CONSOLE</div><h1>Network<br /><em>monitoring.</em></h1><div className="auth-edition">DISTRIBUTED NETWORK OPERATIONS</div><div className="signal-visual" aria-hidden="true"><div className="signal-grid" /><div className="signal-node signal-node-a"><span /><i>EDGE / 01</i></div><div className="signal-node signal-node-b"><span /><i>CORE / 02</i></div><div className="signal-node signal-node-c"><span /><i>FIELD / 03</i></div><div className="signal-path signal-path-a" /><div className="signal-path signal-path-b" /><div className="signal-center"><Network size={22} /><span>NETMONI</span></div><div className="signal-coordinates">06.9271 N<br />79.8612 E</div></div><div className="auth-proof"><span><ShieldCheck size={16} /> SESSION-BASED ACCESS</span><span>LOCAL INSTANCE</span></div></section>
-      <section className="auth-panel"><div className="auth-panel-kicker">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</div><h2>{mode === 'login' ? 'Sign in to NetMoni' : 'Create your account'}</h2><p>{mode === 'login' ? 'Use your network operations account to continue.' : 'New accounts are created with viewer access.'}</p>
+      <section className="auth-panel"><div className="auth-panel-kicker">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</div><h2>{mode === 'login' ? 'Sign in to NetMoni' : 'Create your account'}</h2><p>{mode === 'login' ? 'Use your network operations account to continue.' : 'New accounts are created with viewer access.'}</p>{notice&&<div className="auth-error" role="alert"><AlertTriangle size={15}/>{notice}</div>}
         <div className="auth-tabs" role="tablist" aria-label="Authentication mode"><button className={mode === 'login' ? 'auth-tab-active' : ''} onClick={() => { setMode('login'); setError('') }} role="tab" aria-selected={mode === 'login'}>Sign in</button><button className={mode === 'register' ? 'auth-tab-active' : ''} onClick={() => { setMode('register'); setError('') }} role="tab" aria-selected={mode === 'register'}>Create account</button></div>
         <form onSubmit={submit} className="auth-form"><label className="field-label" htmlFor="username">Email or username</label><input id="username" className="text-input" type={mode === 'register' ? 'email' : 'text'} maxLength={254} autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="you@company.com" required /><div className="password-label-row"><label className="field-label" htmlFor="password">Password</label>{mode === 'register' && <small>10–72 characters</small>}</div><div className="password-field"><input id="password" className="text-input" type={visible ? 'text' : 'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 10 : undefined} maxLength={72} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required /><button type="button" className="icon-button password-toggle" onClick={() => setVisible((value) => !value)} aria-label={visible ? 'Hide password' : 'Show password'}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>{error && <div className="auth-error" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button button-primary auth-submit" type="submit" disabled={busy}>{busy ? <RefreshCw size={16} className="spinning" /> : <span>{mode === 'login' ? 'Continue to dashboard' : 'Create account'}</span>}{!busy && <ArrowRight size={16} />}</button></form>
         <div className="auth-footnote"><ShieldCheck size={15} /><span>Secure session · Tokens stay in this browser session</span></div>
@@ -379,7 +384,7 @@ function MonitoringTable({ results, devices }: { results: MonitoringResult[]; de
   })}</tbody></table></div>
 }
 interface Scan { scanId:string; agentId:string; networkId:string|null; networkCidr:string; status:'QUEUED'|'RUNNING'|'COMPLETED'|'FAILED'; progress:number; checked:number; discovered:number; failed:number; newDevices:number; existingDevices:number; createdAt:string; startedAt:string|null; finishedAt:string|null; durationMs:number|null; errorMessage:string|null }
-function NetworkDiscoveryView({ agents, token, canManage, isAdmin, revision, onError }: { agents: Agent[]; token: string; canManage: boolean; isAdmin:boolean; revision:number; onError: (message:string)=>void }) {
+function NetworkDiscoveryView({ agents, token, canManage, isAdmin, revision, onError, onUnauthorized }: { agents: Agent[]; token: string; canManage: boolean; isAdmin:boolean; revision:number; onError: (message:string)=>void; onUnauthorized:()=>void }) {
   const [agentId,setAgentId]=useState('ALL')
   const [networks,setNetworks]=useState<NetworkInfo[]>([]); const [jobs,setJobs]=useState<Scan[]>([]); const [devices,setDevices]=useState<Device[]>([])
   const [search,setSearch]=useState(''); const [typeFilter,setTypeFilter]=useState('ALL'); const [interfaceStatusFilter,setInterfaceStatusFilter]=useState('ALL'); const [selectedIds,setSelectedIds]=useState<string[]>([]); const [page,setPage]=useState(0); const [busy,setBusy]=useState(false); const [networkRefreshKey,setNetworkRefreshKey]=useState(0)
@@ -388,7 +393,7 @@ function NetworkDiscoveryView({ agents, token, canManage, isAdmin, revision, onE
   useEffect(()=>{const target=agentId==='ALL'?null:agents.find(a=>a.agentId===agentId);setAllowedText((target?.authorizedCidrs??[target?.segmentCidr??'']).join('\n'))},[agentId,agents])
   const active=jobs.some(s=>s.status==='QUEUED'||s.status==='RUNNING')
   const agentNetworks=networks.filter(n=>agentId==='ALL'||n.agentId===agentId)
-  useEffect(()=>{let alive=true;const refresh=async()=>{try{const listAll=await request<NetworkInfo[]>('/discovery/networks',token);const list=Array.isArray(listAll)?listAll:[];const selectedAgents=agents.filter(a=>agentId==='ALL'||a.agentId===agentId);const [deviceLists,scanLists]=await Promise.all([Promise.all(selectedAgents.map(a=>request<Device[]>(`/discovery/agents/${a.agentId}/devices`,token))),Promise.all(selectedAgents.map(a=>request<Scan[]>(`/discovery/agents/${a.agentId}/scans`,token)))]);if(alive){setNetworks(list);setDevices(deviceLists.flatMap(d=>Array.isArray(d)?d:[]));setJobs(scanLists.flatMap(s=>Array.isArray(s)?s:[]).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)));setSelectedIds(ids=>ids.filter(id=>list.some(n=>n.networkId===id&&(agentId==='ALL'||n.agentId===agentId)&&n.scanEligible&&n.agentStatus==='ONLINE')))}}catch(e){if(alive)onError(e instanceof Error?e.message:'Unable to load discovery data')}};void refresh();const timer=window.setInterval(()=>void refresh(),active?1800:20000);return()=>{alive=false;window.clearInterval(timer)}},[agents,agentId,token,active,revision,onError,networkRefreshKey])
+  useEffect(()=>{let alive=true;const refresh=async()=>{try{const listAll=await request<NetworkInfo[]>('/discovery/networks',token);const list=Array.isArray(listAll)?listAll:[];const selectedAgents=agents.filter(a=>agentId==='ALL'||a.agentId===agentId);const [deviceLists,scanLists]=await Promise.all([Promise.all(selectedAgents.map(a=>request<Device[]>(`/discovery/agents/${a.agentId}/devices`,token))),Promise.all(selectedAgents.map(a=>request<Scan[]>(`/discovery/agents/${a.agentId}/scans`,token)))]);if(alive){setNetworks(list);setDevices(deviceLists.flatMap(d=>Array.isArray(d)?d:[]));setJobs(scanLists.flatMap(s=>Array.isArray(s)?s:[]).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)));setSelectedIds(ids=>ids.filter(id=>list.some(n=>n.networkId===id&&(agentId==='ALL'||n.agentId===agentId)&&n.scanEligible&&n.agentStatus==='ONLINE')))}}catch(e){if(alive&&e instanceof ApiError&&e.status===401)onUnauthorized();else if(alive)onError(e instanceof Error?e.message:'Unable to load discovery data')}};void refresh();const timer=window.setInterval(()=>void refresh(),active?1800:20000);return()=>{alive=false;window.clearInterval(timer)}},[agents,agentId,token,active,revision,onError,onUnauthorized,networkRefreshKey])
   async function start(ids=selectedIds){if(!ids.length)return;setBusy(true);try{const next=await request<Scan[]>('/discovery/scan',token,{method:'POST',body:JSON.stringify({networkIds:ids})});setJobs(current=>[...next,...current].slice(0,20))}catch(e){onError(e instanceof Error?e.message:'Unable to start scan')}finally{setBusy(false)}}
   async function saveAuthorizedCidrs(){if(agentId==='ALL')return;setSavingAllowed(true);try{await request(`/agents/${agentId}/authorized-cidrs`,token,{method:'PUT',body:JSON.stringify({cidrs:allowedText.split(/[\s,;]+/).map(v=>v.trim()).filter(Boolean)})});setNetworkRefreshKey(k=>k+1)}catch(e){onError(e instanceof Error?e.message:'Unable to update authorized networks')}finally{setSavingAllowed(false)}}
   function toggle(id:string){setSelectedIds(current=>current.includes(id)?current.filter(x=>x!==id):[...current,id])}
