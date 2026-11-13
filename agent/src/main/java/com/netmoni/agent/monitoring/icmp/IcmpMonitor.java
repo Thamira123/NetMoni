@@ -7,12 +7,26 @@ import java.net.InetAddress;
 import java.time.Instant;
 
 public final class IcmpMonitor {
+    @FunctionalInterface
+    public interface ReachabilityProbe {
+        boolean isReachable(String ipAddress, int timeoutMs) throws Exception;
+    }
+
     private final int timeoutMs;
     private final int attempts;
+    private final ReachabilityProbe probe;
 
     public IcmpMonitor(int timeoutMs, int attempts) {
+        this(timeoutMs, attempts, (ipAddress, timeout) -> InetAddress.getByName(ipAddress).isReachable(timeout));
+    }
+
+    public IcmpMonitor(int timeoutMs, int attempts, ReachabilityProbe probe) {
+        if (timeoutMs < 1 || attempts < 1) {
+            throw new IllegalArgumentException("ICMP timeout and attempts must be positive");
+        }
         this.timeoutMs = timeoutMs;
         this.attempts = attempts;
+        this.probe = probe;
     }
 
     public MonitoringResult check(String ipAddress) {
@@ -20,10 +34,9 @@ public final class IcmpMonitor {
         long elapsedTotal = 0;
         String error = null;
         try {
-            InetAddress address = InetAddress.getByName(ipAddress);
             for (int attempt = 0; attempt < attempts; attempt++) {
                 long started = System.nanoTime();
-                if (address.isReachable(timeoutMs)) {
+                if (probe.isReachable(ipAddress, timeoutMs)) {
                     successful++;
                     elapsedTotal += (System.nanoTime() - started) / 1_000_000;
                 } else {

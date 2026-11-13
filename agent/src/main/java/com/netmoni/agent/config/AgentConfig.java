@@ -18,6 +18,8 @@ public record AgentConfig(
         UUID agentId,
         String name,
         String localIp,
+        String networkInterfaceName,
+        String macAddress,
         String version,
         Ipv4Cidr subnet,
         String backendHost,
@@ -39,6 +41,11 @@ public record AgentConfig(
         String snmpVersion,
         int snmpPort,
         String snmpCommunity,
+        String snmpSecurityName,
+        String snmpAuthProtocol,
+        String snmpAuthPassphrase,
+        String snmpPrivacyProtocol,
+        String snmpPrivacyPassphrase,
         int snmpTimeoutMs) {
 
     public AgentConfig {
@@ -49,6 +56,17 @@ public record AgentConfig(
     @Override
     public int[] tcpPorts() {
         return Arrays.copyOf(tcpPorts, tcpPorts.length);
+    }
+
+    @Override
+    public String toString() {
+        return "AgentConfig[agentId=" + agentId + ", name=" + name + ", localIp=" + localIp
+                + ", networkInterfaceName=" + networkInterfaceName + ", version=" + version
+                + ", subnet=" + subnet + ", backendHost=" + backendHost + ", backendPort=" + backendPort
+                + ", monitoringIntervalSeconds=" + monitoringIntervalSeconds + ", discoveryIntervalSeconds="
+                + discoveryIntervalSeconds + ", heartbeatIntervalSeconds=" + heartbeatIntervalSeconds
+                + ", tcpPorts=" + Arrays.toString(tcpPorts) + ", snmpEnabled=" + snmpEnabled
+                + ", snmpVersion=" + snmpVersion + ", snmpPort=" + snmpPort + ", credentials=[REDACTED]]";
     }
 
     public static AgentConfig load(Path externalConfig) throws IOException {
@@ -88,14 +106,31 @@ public record AgentConfig(
         if (subnet.toString().length() > 50) {
             throw new IllegalArgumentException("agent.segment-cidr must not exceed 50 characters");
         }
-        String localIp = resolveLocalIp(properties.getProperty("agent.local-ip", ""), subnet);
+        LocalIdentity identity = resolveLocalIdentity(properties.getProperty("agent.local-ip", ""),
+                properties.getProperty("agent.network-interface", ""), subnet);
         String snmpVersion = properties.getProperty("agent.snmp.version", "2c").trim().toLowerCase();
-        if (!snmpVersion.equals("1") && !snmpVersion.equals("2c")) {
-            throw new IllegalArgumentException("SNMP version must be 1 or 2c; SNMPv3 is not supported by this agent");
+        if (!snmpVersion.equals("1") && !snmpVersion.equals("2c") && !snmpVersion.equals("3")) {
+            throw new IllegalArgumentException("SNMP version must be 1, 2c, or 3");
+        }
+        String snmpSecurityName = properties.getProperty("agent.snmp.security-name", "").trim();
+        String snmpAuthProtocol = properties.getProperty("agent.snmp.auth-protocol", "SHA256").trim().toUpperCase();
+        String snmpAuthPassphrase = properties.getProperty("agent.snmp.auth-passphrase", "");
+        String snmpPrivacyProtocol = properties.getProperty("agent.snmp.privacy-protocol", "AES128").trim().toUpperCase();
+        String snmpPrivacyPassphrase = properties.getProperty("agent.snmp.privacy-passphrase", "");
+        if ("3".equals(snmpVersion) && Boolean.parseBoolean(properties.getProperty("agent.snmp.enabled", "false"))) {
+            if (snmpSecurityName.isBlank() || snmpAuthPassphrase.length() < 8 || snmpPrivacyPassphrase.length() < 8) {
+                throw new IllegalArgumentException("SNMPv3 authPriv requires a security name and auth/privacy passphrases of at least 8 characters");
+            }
+            if (!snmpAuthProtocol.equals("SHA") && !snmpAuthProtocol.equals("SHA256")) {
+                throw new IllegalArgumentException("SNMPv3 auth protocol must be SHA or SHA256");
+            }
+            if (!snmpPrivacyProtocol.equals("AES128")) {
+                throw new IllegalArgumentException("SNMPv3 privacy protocol must be AES128");
+            }
         }
 
         return new AgentConfig(
-                agentId, name, localIp, version, subnet,
+                agentId, name, identity.localIp(), identity.interfaceName(), identity.macAddress(), version, subnet,
                 required(properties, "agent.backend.host"),
                 integer(properties, "agent.backend.port", 1, 65535),
                 integer(properties, "agent.backend.connect-timeout-ms", 1, 120_000),
@@ -115,6 +150,8 @@ public record AgentConfig(
                 snmpVersion,
                 integer(properties, "agent.snmp.port", 1, 65535),
                 properties.getProperty("agent.snmp.community", ""),
+                snmpSecurityName, snmpAuthProtocol, snmpAuthPassphrase,
+                snmpPrivacyProtocol, snmpPrivacyPassphrase,
                 integer(properties, "agent.snmp.timeout-ms", 1, 120_000));
     }
 
@@ -123,12 +160,34 @@ public record AgentConfig(
         environment.put("NETMONI_AGENT_ID", "agent.id");
         environment.put("NETMONI_AGENT_NAME", "agent.name");
         environment.put("NETMONI_AGENT_LOCAL_IP", "agent.local-ip");
+        environment.put("NETMONI_AGENT_NETWORK_INTERFACE", "agent.network-interface");
         environment.put("NETMONI_AGENT_VERSION", "agent.version");
         environment.put("NETMONI_AGENT_SEGMENT_CIDR", "agent.segment-cidr");
         environment.put("NETMONI_BACKEND_HOST", "agent.backend.host");
         environment.put("NETMONI_BACKEND_PORT", "agent.backend.port");
+        environment.put("NETMONI_BACKEND_CONNECT_TIMEOUT_MS", "agent.backend.connect-timeout-ms");
+        environment.put("NETMONI_BACKEND_READ_TIMEOUT_MS", "agent.backend.read-timeout-ms");
+        environment.put("NETMONI_MONITORING_INTERVAL_SECONDS", "agent.monitoring.interval-seconds");
+        environment.put("NETMONI_DISCOVERY_INTERVAL_SECONDS", "agent.discovery.interval-seconds");
+        environment.put("NETMONI_HEARTBEAT_INTERVAL_SECONDS", "agent.heartbeat.interval-seconds");
+        environment.put("NETMONI_RETRY_INTERVAL_SECONDS", "agent.retry.interval-seconds");
+        environment.put("NETMONI_OUTBOX_FLUSH_INTERVAL_SECONDS", "agent.outbox.flush-interval-seconds");
+        environment.put("NETMONI_ICMP_TIMEOUT_MS", "agent.icmp.timeout-ms");
+        environment.put("NETMONI_ICMP_RETRIES", "agent.icmp.retries");
+        environment.put("NETMONI_WORKER_THREADS", "agent.worker-threads");
+        environment.put("NETMONI_TCP_PORTS", "agent.tcp.ports");
+        environment.put("NETMONI_DEVICE_IDS", "agent.device-ids");
         environment.put("NETMONI_DATA_DIRECTORY", "agent.data-directory");
+        environment.put("NETMONI_SNMP_ENABLED", "agent.snmp.enabled");
+        environment.put("NETMONI_SNMP_VERSION", "agent.snmp.version");
+        environment.put("NETMONI_SNMP_PORT", "agent.snmp.port");
         environment.put("NETMONI_SNMP_COMMUNITY", "agent.snmp.community");
+        environment.put("NETMONI_SNMP_SECURITY_NAME", "agent.snmp.security-name");
+        environment.put("NETMONI_SNMP_AUTH_PROTOCOL", "agent.snmp.auth-protocol");
+        environment.put("NETMONI_SNMP_AUTH_PASSPHRASE", "agent.snmp.auth-passphrase");
+        environment.put("NETMONI_SNMP_PRIVACY_PROTOCOL", "agent.snmp.privacy-protocol");
+        environment.put("NETMONI_SNMP_PRIVACY_PASSPHRASE", "agent.snmp.privacy-passphrase");
+        environment.put("NETMONI_SNMP_TIMEOUT_MS", "agent.snmp.timeout-ms");
         environment.forEach((variable, key) -> {
             String value = System.getenv(variable);
             if (value != null && !value.isBlank()) {
@@ -137,36 +196,52 @@ public record AgentConfig(
         });
     }
 
-    private static String resolveLocalIp(String configuredIp, Ipv4Cidr subnet) throws IOException {
-        if (!configuredIp.isBlank()) {
-            String ip = configuredIp.trim();
-            if (!subnet.contains(ip)) {
-                throw new IllegalArgumentException("agent.local-ip must be inside agent.segment-cidr");
-            }
-            return ip;
+    private static LocalIdentity resolveLocalIdentity(String configuredIp, String configuredInterface,
+                                                       Ipv4Cidr subnet) throws IOException {
+        String requestedIp = configuredIp.isBlank() ? null : configuredIp.trim();
+        String requestedInterface = configuredInterface.isBlank() ? null : configuredInterface.trim();
+        if (requestedIp != null && !subnet.contains(requestedIp)) {
+            throw new IllegalArgumentException("agent.local-ip must be inside agent.segment-cidr");
         }
         try {
             var interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces.hasMoreElements()) {
                 NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp()) {
+                    continue;
+                }
+                if (requestedInterface != null && !requestedInterface.equals(networkInterface.getName())) {
+                    continue;
+                }
                 var addresses = networkInterface.getInetAddresses();
                 while (addresses.hasMoreElements()) {
                     InetAddress address = addresses.nextElement();
                     String hostAddress = address.getHostAddress();
-                    if (address instanceof Inet4Address && subnet.contains(hostAddress)) {
-                        return hostAddress;
+                    if (address instanceof Inet4Address && subnet.contains(hostAddress)
+                            && (requestedIp == null || requestedIp.equals(hostAddress))) {
+                        byte[] hardwareAddress = networkInterface.getHardwareAddress();
+                        String macAddress = hardwareAddress == null ? null : java.util.HexFormat.ofDelimiter(":")
+                                .withUpperCase().formatHex(hardwareAddress);
+                        return new LocalIdentity(hostAddress, networkInterface.getName(), macAddress);
                     }
                 }
             }
         } catch (SocketException exception) {
             throw new IOException("Could not inspect local network interfaces", exception);
         }
-        throw new IllegalArgumentException("No local IPv4 interface is inside " + subnet
-                + "; configure agent.local-ip explicitly");
+        if (requestedInterface != null) {
+            throw new IllegalArgumentException("No active IPv4 address in " + subnet
+                    + " was found on agent.network-interface " + requestedInterface);
+        }
+        throw new IllegalArgumentException(requestedIp == null
+                ? "No active local IPv4 interface is inside " + subnet
+                : "agent.local-ip is not assigned to an active local interface: " + requestedIp);
     }
 
+    private record LocalIdentity(String localIp, String interfaceName, String macAddress) { }
+
     private static UUID loadAgentId(String configuredId, Path idFile) throws IOException {
-        if (!configuredId.isBlank()) {
+        if (configuredId != null && !configuredId.isBlank()) {
             return UUID.fromString(configuredId.trim());
         }
         if (Files.exists(idFile)) {

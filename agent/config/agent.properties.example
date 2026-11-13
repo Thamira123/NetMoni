@@ -1,5 +1,6 @@
 agent.name=segment-a
 agent.local-ip=
+agent.network-interface=
 agent.version=1.0.0
 agent.segment-cidr=192.168.1.0/24
 agent.backend.host=127.0.0.1
@@ -21,4 +22,9 @@ agent.snmp.enabled=false
 agent.snmp.version=2c
 agent.snmp.port=161
 agent.snmp.community=
+agent.snmp.security-name=
+agent.snmp.auth-protocol=SHA256
+agent.snmp.auth-passphrase=
+agent.snmp.privacy-protocol=AES128
+agent.snmp.privacy-passphrase=
 agent.snmp.timeout-ms=2000

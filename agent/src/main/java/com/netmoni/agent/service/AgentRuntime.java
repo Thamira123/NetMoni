@@ -28,6 +28,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final AgentConfig config;
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
     private final ScheduledExecutorService workers;
+    private final ScheduledExecutorService discoveryWorkers;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private final BackendClient backend;
     private final MessageOutbox outbox;
@@ -43,19 +44,21 @@ public final class AgentRuntime implements AutoCloseable {
     public AgentRuntime(AgentConfig config) throws IOException {
         this.config = config;
         workers = Executors.newScheduledThreadPool(config.workerThreads());
+        discoveryWorkers = Executors.newScheduledThreadPool(config.workerThreads());
         backend = new BackendClient(config.backendHost(), config.backendPort(),
                 config.connectTimeoutMs(), config.readTimeoutMs(), mapper);
         outbox = new MessageOutbox(config.dataDirectory().resolve("outbox.jsonl"), mapper);
-        discovery = new NetworkDiscovery(config, workers);
+        discovery = new NetworkDiscovery(config, discoveryWorkers);
         icmp = new IcmpMonitor(config.icmpTimeoutMs(), config.icmpRetries());
         tcp = new TcpPortMonitor(config.connectTimeoutMs());
         snmp = new SnmpMonitor(config.snmpVersion(), config.snmpPort(), config.snmpCommunity(),
-                config.snmpTimeoutMs(), mapper);
+                config.snmpSecurityName(), config.snmpAuthProtocol(), config.snmpAuthPassphrase(),
+                config.snmpPrivacyProtocol(), config.snmpPrivacyPassphrase(), config.snmpTimeoutMs(), mapper);
     }
 
     public void start() {
-        logger.info("Starting NetMoni agent {} ({}) at {} on subnet {}",
-                config.agentId(), config.name(), config.localIp(), config.subnet());
+        logger.info("Starting NetMoni agent {} ({}) at {} via interface {} on subnet {}",
+                config.agentId(), config.name(), config.localIp(), config.networkInterfaceName(), config.subnet());
         scheduler.scheduleWithFixedDelay(this::register, 0, config.retryIntervalSeconds(), TimeUnit.SECONDS);
         scheduler.scheduleWithFixedDelay(this::heartbeat, config.heartbeatIntervalSeconds(),
                 config.heartbeatIntervalSeconds(), TimeUnit.SECONDS);
@@ -160,12 +163,17 @@ public final class AgentRuntime implements AutoCloseable {
     public void close() {
         scheduler.shutdownNow();
         workers.shutdown();
+        discoveryWorkers.shutdown();
         try {
             if (!workers.awaitTermination(5, TimeUnit.SECONDS)) {
                 workers.shutdownNow();
             }
+            if (!discoveryWorkers.awaitTermination(5, TimeUnit.SECONDS)) {
+                discoveryWorkers.shutdownNow();
+            }
         } catch (InterruptedException exception) {
             workers.shutdownNow();
+            discoveryWorkers.shutdownNow();
             Thread.currentThread().interrupt();
         }
         logger.info("NetMoni agent stopped; pending outbox messages were retained");

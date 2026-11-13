@@ -42,6 +42,9 @@ public final class BackendClient {
                     throw new IOException("Backend closed the connection without an acknowledgement");
                 }
                 JsonNode response = objectMapper.readTree(line);
+                if (response == null || !response.isObject()) {
+                    throw new IOException("Backend returned an empty or invalid acknowledgement");
+                }
                 if (response.hasNonNull("message") || "error".equals(response.path("type").asText())) {
                     throw new IOException("Backend rejected message: " + response.path("message").asText());
                 }
@@ -49,8 +52,10 @@ public final class BackendClient {
                     throw new IOException("Unexpected backend acknowledgement type: " + response.path("type").asText());
                 }
                 String agentId = message.path("agentId").asText(null);
-                if (agentId != null && response.hasNonNull("agentId")
-                        && !agentId.equals(response.path("agentId").asText())) {
+                if (agentId == null || agentId.isBlank()) {
+                    throw new IOException("Agent message is missing agentId");
+                }
+                if (!response.hasNonNull("agentId") || !agentId.equals(response.path("agentId").asText())) {
                     throw new IOException("Backend acknowledgement has a different agentId");
                 }
                 if ("monitoring.result.accepted".equals(expectedType) && !response.hasNonNull("resultId")) {

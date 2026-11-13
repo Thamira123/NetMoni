@@ -18,10 +18,10 @@ class ProtocolMessagesTest {
 
     @Test
     void buildsBackendRegistrationHeartbeatAndResultShapes() {
-        AgentConfig config = new AgentConfig(agentId, "segment-a", "192.168.1.2", "1.0.0",
+        AgentConfig config = new AgentConfig(agentId, "segment-a", "192.168.1.2", "eth0", null, "1.0.0",
                 Ipv4Cidr.parse("192.168.1.0/24"), "127.0.0.1", 9001,
                 1000, 1000, 60, 300, 30, 15, 2, 500, 2, 4, new int[0], Map.of(),
-                Path.of("data"), false, "2c", 161, "", 1000);
+                Path.of("data"), false, "2c", 161, "", "", "SHA256", "", "AES128", "", 1000);
         assertEquals("agent.register", ProtocolMessages.registration(mapper, config).path("type").asText());
         assertEquals(agentId.toString(), ProtocolMessages.heartbeat(mapper, agentId).path("agentId").asText());
 
