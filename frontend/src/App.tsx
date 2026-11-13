@@ -6,22 +6,24 @@ import {
   Gauge, LayoutDashboard, LogOut, Menu, Network, RadioTower, RefreshCw,
   Router, Search, Server, Settings2, ShieldCheck, Signal, X,
 } from 'lucide-react'
+import { ApiError, request, webSocketUrl } from './services/api'
 import './App.css'
 
 type Role = 'ADMIN' | 'OPERATOR' | 'VIEWER'
-type ViewKey = 'overview' | 'devices' | 'agents' | 'alerts'
+type ViewKey = 'overview' | 'devices' | 'agents' | 'monitoring' | 'alerts' | 'reports' | 'device-detail' | 'agent-detail'
 
-interface AuthSession { accessToken: string; username: string; role: Role; demo?: boolean }
+interface AuthSession { accessToken: string; username: string; role: Role; expiresAt?: string }
 interface Page<T> { content: T[]; totalElements: number }
 interface MonitoringResult {
   resultId: string; deviceId: string; agentId: string; checkType: string
   responseTimeMs: number | null; available: boolean; packetLossPercent: number | null
   checkedAt: string; errorMessage: string | null
+  portNumber: number | null; portOpen: boolean | null; snmpData: string | null
 }
 interface DashboardSummary {
   totalAgents: number; onlineAgents: number; offlineAgents: number
   totalMonitoredDevices: number; onlineDevices: number; offlineDevices: number
-  availabilityPercent24h: number; generatedAt: string; recentActivities: MonitoringResult[]
+  availabilityPercent24h: number | null; generatedAt: string; recentActivities: MonitoringResult[]
 }
 interface Device {
   deviceId: string; name: string; ipAddress: string; hostname: string | null
@@ -33,93 +35,48 @@ interface Agent {
   status: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'; registeredAt: string; lastHeartbeat: string | null
 }
 interface Alert {
-  alertId: string; type: string; severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
+  alertId: string; type: string; severity: 'CRITICAL' | 'WARNING' | 'INFO'
   status: 'UNREAD' | 'READ' | 'RESOLVED'; message: string
-  deviceId: string | null; agentId: string | null; createdAt: string
+  deviceId: string | null; agentId: string | null; createdAt: string; resolvedAt: string | null
 }
-interface Snapshot { summary: DashboardSummary; devices: Device[]; agents: Agent[]; alerts: Alert[] }
+interface Snapshot {
+  summary: DashboardSummary; devices: Device[]; agents: Agent[]; alerts: Alert[]; recentResults: MonitoringResult[]
+  deviceTotal: number; agentTotal: number; alertTotal: number
+}
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const navItems: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
   { key: 'devices', label: 'Devices', icon: Router },
   { key: 'agents', label: 'Agents', icon: RadioTower },
+  { key: 'monitoring', label: 'Monitoring', icon: Activity },
   { key: 'alerts', label: 'Alerts', icon: Bell },
+  { key: 'reports', label: 'Reports', icon: Gauge },
 ]
 
 function readSession(): AuthSession | null {
   try {
     const saved = sessionStorage.getItem('netmoni-session')
-    return saved ? JSON.parse(saved) as AuthSession : null
+    if (!saved) return null
+    const session = JSON.parse(saved) as AuthSession
+    if (session.expiresAt && Date.parse(session.expiresAt) <= Date.now()) {
+      sessionStorage.removeItem('netmoni-session')
+      return null
+    }
+    return session
   } catch { return null }
 }
 
-async function request<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init?.headers,
-    },
-  })
-  if (!response.ok) {
-    const body = await response.text()
-    let message = body
-    try {
-      const parsed = JSON.parse(body) as { message?: string; error?: string }
-      message = parsed.message || parsed.error || body
-    } catch { /* Keep the plain response body when it is not JSON. */ }
-    throw new Error(message || `Request failed (${response.status})`)
-  }
-  if (response.status === 204) return undefined as T
-  return await response.json() as T
-}
-
-async function fetchSnapshot(token: string): Promise<Snapshot> {
-  const [summary, devicePage, agentPage, alertPage] = await Promise.all([
+async function fetchSnapshot(token: string, devicePageNumber: number, agentPageNumber: number, alertPageNumber: number): Promise<Snapshot> {
+  const [summary, devicePage, agentPage, alertPage, recentResults] = await Promise.all([
     request<DashboardSummary>('/dashboard/summary', token),
-    request<Page<Device>>('/devices?page=0&size=100', token),
-    request<Page<Agent>>('/agents?page=0&size=100', token),
-    request<Page<Alert>>('/alerts?status=UNREAD&page=0&size=50', token),
+    request<Page<Device>>(`/devices?page=${devicePageNumber}&size=100`, token),
+    request<Page<Agent>>(`/agents?page=${agentPageNumber}&size=100`, token),
+    request<Page<Alert>>(`/alerts?page=${alertPageNumber}&size=100`, token),
+    request<MonitoringResult[]>('/monitoring-results/recent?limit=500', token),
   ])
-  return { summary, devices: devicePage.content, agents: agentPage.content, alerts: alertPage.content }
-}
-
-function createDemoSnapshot(): Snapshot {
-  const timestamp = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString()
-  const devices: Device[] = [
-    { deviceId: 'demo-device-01', name: 'Core switch 01', ipAddress: '10.0.0.1', hostname: 'core-sw-01', deviceType: 'SWITCH', location: 'Colombo · Rack 02', agentId: 'demo-agent-01', status: 'ONLINE', monitoringEnabled: true, updatedAt: timestamp(1) },
-    { deviceId: 'demo-device-02', name: 'Gateway router', ipAddress: '10.0.0.254', hostname: 'edge-rtr-01', deviceType: 'ROUTER', location: 'Colombo · Edge', agentId: 'demo-agent-01', status: 'ONLINE', monitoringEnabled: true, updatedAt: timestamp(2) },
-    { deviceId: 'demo-device-03', name: 'Backup storage', ipAddress: '10.0.1.18', hostname: 'nas-backup-01', deviceType: 'SERVER', location: 'Colombo · Rack 04', agentId: 'demo-agent-02', status: 'OFFLINE', monitoringEnabled: true, updatedAt: timestamp(5) },
-    { deviceId: 'demo-device-04', name: 'Lobby access point', ipAddress: '10.0.2.14', hostname: 'ap-lobby-01', deviceType: 'ACCESS_POINT', location: 'Kandy · Floor 01', agentId: 'demo-agent-03', status: 'ONLINE', monitoringEnabled: true, updatedAt: timestamp(3) },
-    { deviceId: 'demo-device-05', name: 'Database node 02', ipAddress: '10.0.1.22', hostname: 'db-node-02', deviceType: 'SERVER', location: 'Colombo · Rack 05', agentId: 'demo-agent-02', status: 'ONLINE', monitoringEnabled: true, updatedAt: timestamp(4) },
-    { deviceId: 'demo-device-06', name: 'Floor 2 switch', ipAddress: '10.0.2.2', hostname: 'sw-floor-02', deviceType: 'SWITCH', location: 'Kandy · Floor 02', agentId: 'demo-agent-03', status: 'ONLINE', monitoringEnabled: true, updatedAt: timestamp(6) },
-  ]
-  const agents: Agent[] = [
-    { agentId: 'demo-agent-01', name: 'Colombo edge', segmentCidr: '10.0.0.0/24', version: '1.4.2', status: 'ONLINE', registeredAt: timestamp(8000), lastHeartbeat: timestamp(1) },
-    { agentId: 'demo-agent-02', name: 'Colombo core', segmentCidr: '10.0.1.0/24', version: '1.4.2', status: 'ONLINE', registeredAt: timestamp(6000), lastHeartbeat: timestamp(2) },
-    { agentId: 'demo-agent-03', name: 'Kandy office', segmentCidr: '10.0.2.0/24', version: '1.3.8', status: 'OFFLINE', registeredAt: timestamp(4500), lastHeartbeat: timestamp(130) },
-  ]
-  const latencies = [31, 28, 33, 26, 29, 24, 27, 22, 25, 21]
-  const recentActivities: MonitoringResult[] = latencies.map((responseTimeMs, index) => ({
-    resultId: `demo-result-${index}`,
-    deviceId: devices[index % devices.length].deviceId,
-    agentId: devices[index % devices.length].agentId,
-    checkType: index % 3 === 0 ? 'PING' : 'TCP',
-    responseTimeMs,
-    available: index !== 6,
-    packetLossPercent: 0,
-    checkedAt: timestamp((latencies.length - index) * 4),
-    errorMessage: null,
-  }))
-  const alerts: Alert[] = [
-    { alertId: 'demo-alert-01', type: 'DEVICE_UNREACHABLE', severity: 'HIGH', status: 'UNREAD', message: 'Backup storage has missed consecutive health checks.', deviceId: devices[2].deviceId, agentId: 'demo-agent-02', createdAt: timestamp(18) },
-    { alertId: 'demo-alert-02', type: 'AGENT_HEARTBEAT_DELAY', severity: 'MEDIUM', status: 'UNREAD', message: 'Kandy office agent has not reported within the expected interval.', deviceId: null, agentId: 'demo-agent-03', createdAt: timestamp(42) },
-  ]
   return {
-    summary: { totalAgents: 12, onlineAgents: 11, offlineAgents: 1, totalMonitoredDevices: 148, onlineDevices: 143, offlineDevices: 5, availabilityPercent24h: 99.42, generatedAt: timestamp(0), recentActivities },
-    devices, agents, alerts,
+    summary, devices: devicePage.content, agents: agentPage.content, alerts: alertPage.content, recentResults,
+    deviceTotal: devicePage.totalElements, agentTotal: agentPage.totalElements, alertTotal: alertPage.totalElements,
   }
 }
 
@@ -151,23 +108,37 @@ function App() {
   const [search, setSearch] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [devicePageNumber, setDevicePageNumber] = useState(0)
+  const [agentPageNumber, setAgentPageNumber] = useState(0)
+  const [alertPageNumber, setAlertPageNumber] = useState(0)
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [detailDevice, setDetailDevice] = useState<Device | null>(null)
+  const [detailAgent, setDetailAgent] = useState<Agent | null>(null)
+  const [agentDetailDevices, setAgentDetailDevices] = useState<Device[]>([])
+  const [agentDetailResults, setAgentDetailResults] = useState<MonitoringResult[]>([])
+  const [detailResults, setDetailResults] = useState<MonitoringResult[]>([])
+  const [detailLoading, setDetailLoading] = useState(false)
 
   useEffect(() => {
-    if (!session || session.demo) return
+    if (!session) return
     let active = true
     const synchronize = async () => {
       if (!active) return
       setLoading(true)
       try {
-        const next = await fetchSnapshot(session.accessToken)
+        const next = await fetchSnapshot(session.accessToken, devicePageNumber, agentPageNumber, alertPageNumber)
         if (active) { setSnapshot(next); setError('') }
       } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : 'Unable to reach the API')
+        if (active && reason instanceof ApiError && reason.status === 401) {
+          sessionStorage.removeItem('netmoni-session')
+          setSession(null); setSnapshot(null); setError('Your session expired. Sign in again.')
+        } else if (active) setError(reason instanceof Error ? reason.message : 'Unable to reach the API')
       } finally { if (active) setLoading(false) }
     }
     void synchronize()
     const client = new Client({
-      brokerURL: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`,
+      brokerURL: webSocketUrl(),
       connectHeaders: { Authorization: `Bearer ${session.accessToken}` },
       reconnectDelay: 5000,
       heartbeatIncoming: 10000,
@@ -184,25 +155,69 @@ function App() {
     client.activate()
     const intervalId = window.setInterval(() => void synchronize(), 30000)
     return () => { active = false; window.clearInterval(intervalId); void client.deactivate(); setLive(false) }
-  }, [session, refreshKey])
+  }, [session, refreshKey, devicePageNumber, agentPageNumber, alertPageNumber])
 
   function signOut() {
     sessionStorage.removeItem('netmoni-session')
-    setSession(null); setSnapshot(null); setError('')
+    setSession(null); setSnapshot(null); setError(''); setSelectedAgentId(null); setSelectedDeviceId(null)
+    setDetailDevice(null); setDetailAgent(null); setDetailResults([]); setAgentDetailDevices([]); setAgentDetailResults([])
   }
   async function updateAlert(alertId: string, action: 'read' | 'resolve') {
-    if (!session || session.demo) return
+    if (!session) return
     try {
       await request(`/alerts/${alertId}/${action}`, session.accessToken, { method: 'PATCH' })
       setRefreshKey((key) => key + 1)
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not update alert') }
   }
 
-  if (!session) return <AuthScreen onAuthenticated={setSession} onDemo={() => { setSnapshot(createDemoSnapshot()); setSession({ accessToken: '', username: 'preview@netmoni.local', role: 'VIEWER', demo: true }) }} />
+  async function openDevice(deviceId: string) {
+    if (!session) return
+    setSelectedDeviceId(deviceId); setSelectedAgentId(null); setView('device-detail'); setDetailResults([])
+    setDetailDevice(snapshot?.devices.find((device) => device.deviceId === deviceId) ?? null)
+    setDetailLoading(true)
+    try {
+      const to = new Date(); const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000)
+      const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() })
+      const [device, results] = await Promise.all([
+        request<Device>(`/devices/${deviceId}`, session.accessToken),
+        request<MonitoringResult[]>(`/monitoring-results/device/${deviceId}?${params}`, session.accessToken),
+      ])
+      setDetailDevice(device); setDetailResults(results)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not load device history') }
+    finally { setDetailLoading(false) }
+  }
+
+  async function openAgent(agentId: string) {
+    if (!session) return
+    setSelectedAgentId(agentId); setSelectedDeviceId(null); setView('agent-detail')
+    setDetailAgent(snapshot?.agents.find((agent) => agent.agentId === agentId) ?? null)
+    setAgentDetailDevices(snapshot?.devices.filter((device) => device.agentId === agentId) ?? [])
+    setAgentDetailResults(snapshot?.recentResults.filter((result) => result.agentId === agentId) ?? [])
+    setDetailLoading(true)
+    try {
+      const to = new Date(); const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000)
+      const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() })
+      const [agent, devices, results] = await Promise.all([
+        request<Agent>(`/agents/${agentId}`, session.accessToken),
+        request<Device[]>(`/devices/by-agent/${agentId}`, session.accessToken),
+        request<MonitoringResult[]>(`/monitoring-results/agent/${agentId}?${params}`, session.accessToken),
+      ])
+      setDetailAgent(agent); setAgentDetailDevices(devices); setAgentDetailResults(results)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not load agent details') }
+    finally { setDetailLoading(false) }
+  }
+
+  if (!session) return <AuthScreen onAuthenticated={setSession} />
   const summary = snapshot?.summary
-  const title = navItems.find((item) => item.key === view)?.label ?? 'Overview'
+  const title = navItems.find((item) => item.key === view)?.label
+    ?? (view === 'device-detail' ? 'Device details' : view === 'agent-detail' ? 'Agent details' : 'Overview')
+  const unreadAlerts = (snapshot?.alerts ?? []).filter((alert) => alert.status === 'UNREAD')
+  const overviewSnapshot = snapshot ? { ...snapshot, alerts: unreadAlerts } : null
   const matchingDevices = (snapshot?.devices ?? []).filter((device) =>
     `${device.name} ${device.ipAddress} ${device.hostname ?? ''} ${device.location ?? ''}`.toLowerCase().includes(search.toLowerCase()),
+  )
+  const matchingAgents = (snapshot?.agents ?? []).filter((agent) =>
+    `${agent.name} ${agent.agentId} ${agent.segmentCidr} ${agent.version}`.toLowerCase().includes(search.toLowerCase()),
   )
 
   return <div className="app-shell">
@@ -210,29 +225,34 @@ function App() {
       <div className="brand-lockup"><div className="brand-mark"><Network size={20} strokeWidth={2.2} /></div><div className="brand-copy"><strong>netmoni</strong><span>NETWORK INTELLIGENCE</span></div><button className="icon-button sidebar-close" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation"><X size={18} /></button></div>
       <div className="workspace-switcher"><span className="workspace-icon"><Command size={15} /></span><span><strong>Core network</strong><small>Workspace</small></span><ChevronDown size={15} className="muted-icon" /></div>
       <p className="nav-caption">MONITOR</p>
-      <nav className="primary-nav" aria-label="Main navigation">{navItems.map(({ key, label, icon: Icon }) => <button key={key} className={`nav-link ${view === key ? 'nav-link-active' : ''}`} onClick={() => { setView(key); setMobileNavOpen(false) }}><Icon size={18} strokeWidth={1.8} /><span>{label}</span>{key === 'alerts' && (snapshot?.alerts.length ?? 0) > 0 && <span className="nav-count">{snapshot?.alerts.length}</span>}</button>)}</nav>
+      <nav className="primary-nav" aria-label="Main navigation">{navItems.map(({ key, label, icon: Icon }) => <button key={key} className={`nav-link ${view === key ? 'nav-link-active' : ''}`} onClick={() => { setView(key); setMobileNavOpen(false); setSearch('') }}><Icon size={18} strokeWidth={1.8} /><span>{label}</span>{key === 'alerts' && unreadAlerts.length > 0 && <span className="nav-count">{unreadAlerts.length}</span>}</button>)}</nav>
       <p className="nav-caption nav-caption-spaced">SYSTEM</p>
       <button className="nav-link" onClick={() => setError('Settings are managed by your network administrator.')}><Settings2 size={18} strokeWidth={1.8} /><span>Settings</span></button>
       <button className="nav-link" onClick={() => setError('API docs: open docs/backend-api.md in the repository.')}><CircleHelp size={18} strokeWidth={1.8} /><span>Documentation</span><ArrowUpRight size={13} className="nav-external" /></button>
       <div className="sidebar-spacer" />
-      <div className="network-status-card"><div className="network-status-heading"><span className={`status-pulse ${live ? '' : 'status-pulse-off'}`} /><strong>{live ? 'Live connection' : session.demo ? 'Demo preview' : 'Reconnecting'}</strong></div><p>{live ? 'Receiving network events' : session.demo ? 'Sample data · read only' : 'Trying to reach the event stream'}</p><div className="status-track"><span style={{ width: live ? '100%' : session.demo ? '68%' : '38%' }} /></div></div>
-      <button className="profile-row" onClick={signOut} title={session.demo ? 'Exit preview' : 'Sign out'}><span className="avatar">{initials(session.username)}</span><span className="profile-copy"><strong>{session.username}</strong><small>{session.demo ? 'demo preview' : session.role.toLowerCase()}</small></span><LogOut size={16} className="profile-signout" /></button>
+      <div className="network-status-card"><div className="network-status-heading"><span className={`status-pulse ${live ? '' : 'status-pulse-off'}`} /><strong>{live ? 'Live connection' : 'Reconnecting'}</strong></div><p>{live ? 'Receiving network events' : 'Trying to reach the event stream'}</p><div className="status-track"><span style={{ width: live ? '100%' : '38%' }} /></div></div>
+      <button className="profile-row" onClick={signOut} title="Sign out"><span className="avatar">{initials(session.username)}</span><span className="profile-copy"><strong>{session.username}</strong><small>{session.role.toLowerCase()}</small></span><LogOut size={16} className="profile-signout" /></button>
     </aside>
     {mobileNavOpen && <button className="nav-scrim" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
 
     <main className="main-area">
-      <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="breadcrumb"><span>Network</span><span className="breadcrumb-slash">/</span><strong>{title}</strong></div><div className="topbar-actions"><span className={`connection-pill ${live ? 'connection-live' : ''}`}><span />{live ? 'Live' : session.demo ? 'Demo data' : 'Offline'}</span><span className="topbar-divider" /><span className="topbar-date"><Clock3 size={15} />{new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(new Date())}</span><button className="icon-button help-button" onClick={() => session.demo ? setSnapshot(createDemoSnapshot()) : setRefreshKey((key) => key + 1)} title={session.demo ? 'Reset sample data' : 'Refresh data'} aria-label={session.demo ? 'Reset sample data' : 'Refresh data'}><RefreshCw size={17} className={loading ? 'spinning' : ''} /></button></div></header>
+      <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="breadcrumb"><span>Network</span><span className="breadcrumb-slash">/</span><strong>{title}</strong></div><div className="topbar-actions"><span className={`connection-pill ${live ? 'connection-live' : ''}`}><span />{live ? 'Live' : 'Offline'}</span><span className="topbar-divider" /><span className="topbar-date"><Clock3 size={15} />{new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(new Date())}</span><button className="icon-button help-button" onClick={() => setRefreshKey((key) => key + 1)} title="Refresh data" aria-label="Refresh data"><RefreshCw size={17} className={loading ? 'spinning' : ''} /></button></div></header>
       <div className="page-content">
-        <section className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" />NETWORK OPERATIONS</div><h1>{view === 'overview' ? 'Good network, good day.' : title}</h1><p>{pageDescription(view)}</p></div><div className="heading-actions">{view === 'devices' && <label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search devices" aria-label="Search devices" /><kbd>/</kbd></label>}<button className="button button-secondary" onClick={() => setRefreshKey((key) => key + 1)}><RefreshCw size={15} className={loading ? 'spinning' : ''} /><span>Refresh</span></button></div></section>
-        {session.demo && <div className="demo-banner"><span><Eye size={16} /> Demo preview · Sample network data only</span><button onClick={signOut}>Exit preview</button></div>}
+        <section className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" />NETWORK OPERATIONS</div><h1>{view === 'overview' ? 'Good network, good day.' : title}</h1><p>{pageDescription(view)}</p></div><div className="heading-actions"><button className="button button-secondary" onClick={() => setRefreshKey((key) => key + 1)}><RefreshCw size={15} className={loading ? 'spinning' : ''} /><span>Refresh</span></button></div></section>
         {error && <div className="error-banner" role="alert"><AlertTriangle size={17} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss"><X size={15} /></button></div>}
         {!snapshot && loading && <LoadingState />}
         {!snapshot && !loading && error && <ConnectionState onRetry={() => setRefreshKey((key) => key + 1)} />}
-        {snapshot && view === 'overview' && <Overview summary={summary} snapshot={snapshot} onNavigate={setView} onAlertAction={updateAlert} readOnly={session.demo} />}
-        {snapshot && view === 'devices' && <DevicesView devices={matchingDevices} total={snapshot.summary.totalMonitoredDevices} />}
-        {snapshot && view === 'agents' && <AgentsView agents={snapshot.agents} />}
-        {snapshot && view === 'alerts' && <AlertsView alerts={snapshot.alerts} onAlertAction={updateAlert} canResolve={session.role !== 'VIEWER'} readOnly={session.demo} />}
-        <footer className="page-footer"><span><span className={`footer-dot ${error ? 'footer-dot-warning' : ''}`} />{session.demo ? 'DEMO DATA ONLY' : error ? 'API CONNECTION DEGRADED' : 'SYSTEM OPERATIONAL'}</span><span>Last sync {session.demo ? 'Sample data' : formatTime(summary?.generatedAt)}</span></footer>
+        {view === 'devices' && <label className="search-box page-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search devices" aria-label="Search devices" /></label>}
+        {view === 'agents' && <label className="search-box page-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search agents" aria-label="Search agents" /></label>}
+        {snapshot && view === 'overview' && overviewSnapshot && <Overview summary={summary} snapshot={overviewSnapshot} onNavigate={setView} onAlertAction={updateAlert} />}
+        {snapshot && view === 'devices' && <DevicesView devices={matchingDevices} total={snapshot.deviceTotal} page={devicePageNumber} onPageChange={setDevicePageNumber} canManage={session.role !== 'VIEWER'} canDelete={session.role === 'ADMIN'} agents={snapshot.agents} onOpenDevice={openDevice} onOpenAgent={openAgent} token={session.accessToken} onChanged={() => setRefreshKey((key) => key + 1)} onError={setError} />}
+        {snapshot && view === 'agents' && <AgentsView agents={matchingAgents} total={snapshot.agentTotal} page={agentPageNumber} onPageChange={setAgentPageNumber} onOpenAgent={openAgent} />}
+        {snapshot && view === 'monitoring' && <MonitoringView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} onOpenDevice={openDevice} />}
+        {snapshot && view === 'alerts' && <AlertsView alerts={snapshot.alerts} total={snapshot.alertTotal} page={alertPageNumber} onPageChange={setAlertPageNumber} onAlertAction={updateAlert} canResolve={session.role !== 'VIEWER'} />}
+        {snapshot && view === 'reports' && <ReportsView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} />}
+        {snapshot && view === 'device-detail' && selectedDeviceId && <DeviceDetailView device={detailDevice ?? undefined} results={detailResults} loading={detailLoading} onBack={() => setView('devices')} onOpenAgent={openAgent} />}
+        {snapshot && view === 'agent-detail' && selectedAgentId && <AgentDetailView agent={detailAgent ?? undefined} devices={agentDetailDevices} results={agentDetailResults} loading={detailLoading} onBack={() => setView('agents')} onOpenDevice={openDevice} />}
+        <footer className="page-footer"><span><span className={`footer-dot ${error ? 'footer-dot-warning' : ''}`} />{error ? 'API CONNECTION DEGRADED' : 'SYSTEM OPERATIONAL'}</span><span>Last sync {formatTime(summary?.generatedAt)}</span></footer>
       </div>
     </main>
   </div>
@@ -243,12 +263,16 @@ function pageDescription(view: ViewKey) {
     overview: 'A clear view of your infrastructure, all in one place.',
     devices: 'Every monitored endpoint across your network.',
     agents: 'Collectors reporting into your monitoring network.',
+    monitoring: 'Recent checks and results received from monitoring agents.',
     alerts: 'Events that need a closer look from your team.',
+    reports: 'Availability and response trends from real monitoring results.',
+    'device-detail': 'Device status and recent monitoring history.',
+    'agent-detail': 'Collector health and the devices it reports for.',
   }
   return descriptions[view]
 }
 
-function AuthScreen({ onAuthenticated, onDemo }: { onAuthenticated: (session: AuthSession) => void; onDemo: () => void }) {
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -258,8 +282,8 @@ function AuthScreen({ onAuthenticated, onDemo }: { onAuthenticated: (session: Au
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('')
     try {
-      const result = await request<{ accessToken: string; username: string; role: Role }>(`/auth/${mode}`, undefined, { method: 'POST', body: JSON.stringify({ username, password }) })
-      const next = { accessToken: result.accessToken, username: result.username, role: result.role }
+      const result = await request<{ accessToken: string; username: string; role: Role; expiresAt: string }>(`/auth/${mode}`, undefined, { method: 'POST', body: JSON.stringify({ username, password }) })
+      const next = { accessToken: result.accessToken, username: result.username, role: result.role, expiresAt: result.expiresAt }
       sessionStorage.setItem('netmoni-session', JSON.stringify(next)); onAuthenticated(next)
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Authentication failed'
@@ -275,20 +299,19 @@ function AuthScreen({ onAuthenticated, onDemo }: { onAuthenticated: (session: Au
       <section className="auth-story"><div className="auth-story-label"><span className="status-pulse" /> MONITORING CONSOLE</div><h1>Network<br /><em>monitoring.</em></h1><div className="auth-edition">DISTRIBUTED NETWORK OPERATIONS</div><div className="signal-visual" aria-hidden="true"><div className="signal-grid" /><div className="signal-node signal-node-a"><span /><i>EDGE / 01</i></div><div className="signal-node signal-node-b"><span /><i>CORE / 02</i></div><div className="signal-node signal-node-c"><span /><i>FIELD / 03</i></div><div className="signal-path signal-path-a" /><div className="signal-path signal-path-b" /><div className="signal-center"><Network size={22} /><span>NETMONI</span></div><div className="signal-coordinates">06.9271 N<br />79.8612 E</div></div><div className="auth-proof"><span><ShieldCheck size={16} /> SESSION-BASED ACCESS</span><span>LOCAL INSTANCE</span></div></section>
       <section className="auth-panel"><div className="auth-panel-kicker">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</div><h2>{mode === 'login' ? 'Sign in to NetMoni' : 'Create your account'}</h2><p>{mode === 'login' ? 'Use your network operations account to continue.' : 'New accounts are created with viewer access.'}</p>
         <div className="auth-tabs" role="tablist" aria-label="Authentication mode"><button className={mode === 'login' ? 'auth-tab-active' : ''} onClick={() => { setMode('login'); setError('') }} role="tab" aria-selected={mode === 'login'}>Sign in</button><button className={mode === 'register' ? 'auth-tab-active' : ''} onClick={() => { setMode('register'); setError('') }} role="tab" aria-selected={mode === 'register'}>Create account</button></div>
-        <form onSubmit={submit} className="auth-form"><label className="field-label" htmlFor="username">Email or username</label><input id="username" className="text-input" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="you@company.com" required /><div className="password-label-row"><label className="field-label" htmlFor="password">Password</label>{mode === 'register' && <small>10 characters minimum</small>}</div><div className="password-field"><input id="password" className="text-input" type={visible ? 'text' : 'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 10 : undefined} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required /><button type="button" className="icon-button password-toggle" onClick={() => setVisible((value) => !value)} aria-label={visible ? 'Hide password' : 'Show password'}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>{error && <div className="auth-error" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button button-primary auth-submit" type="submit" disabled={busy}>{busy ? <RefreshCw size={16} className="spinning" /> : <span>{mode === 'login' ? 'Continue to dashboard' : 'Create account'}</span>}{!busy && <ArrowRight size={16} />}</button></form>
+        <form onSubmit={submit} className="auth-form"><label className="field-label" htmlFor="username">Email or username</label><input id="username" className="text-input" type={mode === 'register' ? 'email' : 'text'} maxLength={254} autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="you@company.com" required /><div className="password-label-row"><label className="field-label" htmlFor="password">Password</label>{mode === 'register' && <small>10–72 characters</small>}</div><div className="password-field"><input id="password" className="text-input" type={visible ? 'text' : 'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 10 : undefined} maxLength={72} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required /><button type="button" className="icon-button password-toggle" onClick={() => setVisible((value) => !value)} aria-label={visible ? 'Hide password' : 'Show password'}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>{error && <div className="auth-error" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button button-primary auth-submit" type="submit" disabled={busy}>{busy ? <RefreshCw size={16} className="spinning" /> : <span>{mode === 'login' ? 'Continue to dashboard' : 'Create account'}</span>}{!busy && <ArrowRight size={16} />}</button></form>
         <div className="auth-footnote"><ShieldCheck size={15} /><span>Secure session · Tokens stay in this browser session</span></div>
-        <button type="button" className="demo-preview-button" onClick={onDemo}><Eye size={15} /> Preview dashboard with sample data <ArrowRight size={15} /></button>
       </section>
     </div>
     <div className="auth-bottomline"><span>NETMONI NETWORK MONITORING</span><span>BUILT FOR CLARITY <span className="auth-bottom-separator">/</span> DESIGNED FOR OPERATIONS</span></div>
   </main>
 }
 
-function Overview({ summary, snapshot, onNavigate, onAlertAction, readOnly }: { summary?: DashboardSummary; snapshot: Snapshot; onNavigate: (view: ViewKey) => void; onAlertAction: (id: string, action: 'read' | 'resolve') => void; readOnly?: boolean }) {
+function Overview({ summary, snapshot, onNavigate, onAlertAction }: { summary?: DashboardSummary; snapshot: Snapshot; onNavigate: (view: ViewKey) => void; onAlertAction: (id: string, action: 'read' | 'resolve') => void }) {
   const chartData = [...(summary?.recentActivities ?? [])].sort((a, b) => new Date(a.checkedAt).getTime() - new Date(b.checkedAt).getTime()).map((item) => ({ time: formatTime(item.checkedAt), latency: item.responseTimeMs ?? 0, status: item.available ? 'Available' : 'Unavailable', checkType: item.checkType }))
   return <>
     <section className="metric-grid" aria-label="Network summary">
-      <MetricCard label="NETWORK AVAILABILITY" value={`${(summary?.availabilityPercent24h ?? 0).toFixed(1)}%`} note="Last 24 hours" icon={<Gauge size={18} />} tone="green" trend="Observed uptime" />
+      <MetricCard label="NETWORK AVAILABILITY" value={summary?.availabilityPercent24h == null ? '—' : `${summary.availabilityPercent24h.toFixed(1)}%`} note={summary?.availabilityPercent24h == null ? 'No checks in last 24 hours' : 'Last 24 hours'} icon={<Gauge size={18} />} tone="green" trend={summary?.availabilityPercent24h == null ? 'No sample' : 'Observed uptime'} />
       <MetricCard label="MONITORED DEVICES" value={String(summary?.totalMonitoredDevices ?? 0)} note={`${summary?.onlineDevices ?? 0} online`} icon={<Server size={18} />} tone="blue" trend={`${summary?.offlineDevices ?? 0} offline`} trendDown={(summary?.offlineDevices ?? 0) > 0} />
       <MetricCard label="REGISTERED AGENTS" value={String(summary?.totalAgents ?? 0)} note={`${summary?.onlineAgents ?? 0} reporting`} icon={<RadioTower size={18} />} tone="amber" trend={`${summary?.offlineAgents ?? 0} offline`} trendDown={(summary?.offlineAgents ?? 0) > 0} />
       <MetricCard label="UNREAD ALERTS" value={String(snapshot.alerts.length)} note="Requires review" icon={<Bell size={18} />} tone="red" trend={snapshot.alerts.length ? 'Needs attention' : 'All clear'} trendDown={snapshot.alerts.length > 0} />
@@ -299,7 +322,7 @@ function Overview({ summary, snapshot, onNavigate, onAlertAction, readOnly }: { 
     </section>
     <section className="lower-grid">
       <article className="panel table-panel"><div className="panel-heading table-panel-heading"><div><span className="panel-kicker">LATEST ACTIVITY</span><h2>Recent monitoring results</h2></div><span className="live-table-label"><span className="footer-dot" />LIVE FEED</span></div><MonitoringTable results={summary?.recentActivities ?? []} devices={snapshot.devices} /><button className="panel-footer-link" onClick={() => onNavigate('devices')}>View monitored devices <ArrowRight size={14} /></button></article>
-      <article className="panel alerts-panel"><div className="panel-heading table-panel-heading"><div><span className="panel-kicker">NEEDS ATTENTION</span><h2>Open alerts</h2></div><button className="icon-button panel-icon-button" onClick={() => onNavigate('alerts')} aria-label="View all alerts"><ArrowUpRight size={17} /></button></div>{snapshot.alerts.length ? <div className="alert-list compact-alert-list">{snapshot.alerts.slice(0, 4).map((alert) => <AlertRow key={alert.alertId} alert={alert} onAction={onAlertAction} canResolve={false} readOnly={readOnly} />)}</div> : <div className="all-clear"><span><Check size={18} /></span><strong>All clear</strong><p>No unread alerts right now.</p></div>}<button className="panel-footer-link" onClick={() => onNavigate('alerts')}>Open alert center <ArrowRight size={14} /></button></article>
+      <article className="panel alerts-panel"><div className="panel-heading table-panel-heading"><div><span className="panel-kicker">NEEDS ATTENTION</span><h2>Open alerts</h2></div><button className="icon-button panel-icon-button" onClick={() => onNavigate('alerts')} aria-label="View all alerts"><ArrowUpRight size={17} /></button></div>{snapshot.alerts.length ? <div className="alert-list compact-alert-list">{snapshot.alerts.slice(0, 4).map((alert) => <AlertRow key={alert.alertId} alert={alert} onAction={onAlertAction} canResolve={false} />)}</div> : <div className="all-clear"><span><Check size={18} /></span><strong>All clear</strong><p>No unread alerts right now.</p></div>}<button className="panel-footer-link" onClick={() => onNavigate('alerts')}>Open alert center <ArrowRight size={14} /></button></article>
     </section>
   </>
 }
@@ -308,9 +331,10 @@ function MetricCard({ label, value, note, icon, tone, trend, trendDown }: { labe
   return <article className="metric-card"><div className="metric-card-top"><span>{label}</span><i className={`metric-icon metric-${tone}`}>{icon}</i></div><div className="metric-value">{value}</div><div className="metric-bottom"><span>{note}</span><span className={`metric-trend ${trendDown ? 'metric-trend-warning' : ''}`}>{trendDown ? <ArrowDownRight size={13} /> : <ArrowUpRight size={13} />}{trend}</span></div></article>
 }
 function LatencyChart({ results }: { results: MonitoringResult[] }) {
-  if (!results.length) return <EmptyState icon={<Activity size={20} />} title="No checks yet" detail="Monitoring results will appear here as agents report in." />
-  const ordered = [...results].sort((a, b) => new Date(a.checkedAt).getTime() - new Date(b.checkedAt).getTime())
-  const values = ordered.map((result) => result.responseTimeMs ?? 0)
+  const measured = results.filter((result) => result.responseTimeMs != null)
+  if (!measured.length) return <EmptyState icon={<Activity size={20} />} title="No latency readings yet" detail="Response-time measurements will appear here when checks include a latency value." />
+  const ordered = [...measured].sort((a, b) => new Date(a.checkedAt).getTime() - new Date(b.checkedAt).getTime())
+  const values = ordered.map((result) => result.responseTimeMs as number)
   const maxValue = Math.max(10, ...values) * 1.15
   const chartWidth = 640
   const chartHeight = 160
@@ -322,7 +346,7 @@ function LatencyChart({ results }: { results: MonitoringResult[] }) {
   const plotHeight = chartHeight - top - bottom
   const points = ordered.map((result, index) => ({
     x: left + (ordered.length === 1 ? plotWidth / 2 : (index / (ordered.length - 1)) * plotWidth),
-    y: top + plotHeight - ((result.responseTimeMs ?? 0) / maxValue) * plotHeight,
+    y: top + plotHeight - ((result.responseTimeMs as number) / maxValue) * plotHeight,
     result,
   }))
   const line = points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ')
@@ -335,7 +359,7 @@ function LatencyChart({ results }: { results: MonitoringResult[] }) {
     {yTicks.map((tick) => <g key={tick.label}><line x1={left} x2={chartWidth - right} y1={tick.y} y2={tick.y} stroke="#e9eeea" strokeDasharray="3 5" /><text x={left - 7} y={tick.y + 3} textAnchor="end" fill="#8b9691" fontSize="10">{tick.label}</text></g>)}
     <path d={area} fill="url(#latencyFill)" />
     <path d={line} fill="none" stroke="#287963" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-    {points.map((point) => <circle key={point.result.resultId} cx={point.x} cy={point.y} r="3" fill="#287963" stroke="#fff" strokeWidth="2"><title>{`${point.result.checkType} · ${point.result.responseTimeMs ?? 0} ms · ${point.result.available ? 'Available' : 'Unavailable'}`}</title></circle>)}
+    {points.map((point) => <circle key={point.result.resultId} cx={point.x} cy={point.y} r="3" fill="#287963" stroke="#fff" strokeWidth="2"><title>{`${point.result.checkType} · ${point.result.responseTimeMs} ms · ${point.result.available ? 'Available' : 'Unavailable'}`}</title></circle>)}
     {xIndexes.map((index) => <text key={index} x={points[index].x} y={chartHeight - 3} textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'} fill="#8b9691" fontSize="10">{formatTime(ordered[index].checkedAt)}</text>)}
   </svg>
 }
@@ -347,17 +371,194 @@ function MonitoringTable({ results, devices }: { results: MonitoringResult[]; de
     return <tr key={result.resultId}><td><span className="table-device"><span className="table-device-icon"><Cpu size={15} /></span><span><strong>{device?.name ?? 'Unknown device'}</strong><small>{device?.ipAddress ?? result.deviceId.slice(0, 8)}</small></span></span></td><td><span className="check-type">{result.checkType}</span></td><td><StatusBadge status={result.available ? 'ONLINE' : 'OFFLINE'} /></td><td className="latency-cell">{result.responseTimeMs == null ? '--' : `${result.responseTimeMs} ms`}</td><td className="time-cell">{formatRelative(result.checkedAt)}</td></tr>
   })}</tbody></table></div>
 }
-function DevicesView({ devices, total }: { devices: Device[]; total: number }) {
-  return <section className="panel full-table-panel"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">INVENTORY</span><h2>Monitored devices</h2><p>{total} registered endpoints</p></div><div className="table-heading-summary"><strong>{devices.filter((device) => device.status === 'ONLINE').length}</strong><span>ONLINE</span><i /><strong>{devices.filter((device) => device.status === 'OFFLINE').length}</strong><span>OFFLINE</span></div></div>{devices.length ? <div className="table-scroll"><table className="data-table device-data-table"><thead><tr><th>DEVICE</th><th>TYPE</th><th>LOCATION</th><th>STATUS</th><th>MONITORING</th><th>UPDATED</th></tr></thead><tbody>{devices.map((device) => <tr key={device.deviceId}><td><span className="table-device"><span className={`table-device-icon ${device.status === 'OFFLINE' ? 'table-device-offline' : ''}`}><Server size={15} /></span><span><strong>{device.name}</strong><small>{device.hostname || device.ipAddress}</small></span></span></td><td><span className="device-type">{device.deviceType}</span></td><td className="location-cell">{device.location || 'Unassigned'}</td><td><StatusBadge status={device.status} /></td><td><span className={`monitoring-state ${device.monitoringEnabled ? 'monitoring-on' : ''}`}><span />{device.monitoringEnabled ? 'Enabled' : 'Paused'}</span></td><td className="time-cell">{formatRelative(device.updatedAt)}</td></tr>)}</tbody></table></div> : <EmptyState icon={<Router size={20} />} title="No devices found" detail="Devices registered by your network agents will appear here." />}<div className="table-pagination"><span>Showing <strong>{devices.length}</strong> of <strong>{total}</strong> devices</span><span>Maximum page size: 100</span></div></section>
+function DevicesView({ devices, total, page, onPageChange, canManage, canDelete, agents, onOpenDevice, onOpenAgent, token, onChanged, onError }: {
+  devices: Device[]; total: number; page: number; onPageChange: (page: number) => void; canManage: boolean; canDelete: boolean
+  agents: Agent[]; onOpenDevice: (id: string) => void; onOpenAgent: (id: string) => void; token: string; onChanged: () => void; onError: (message: string) => void
+}) {
+  const [editing, setEditing] = useState<Device | null | false>(false)
+  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [agentFilter, setAgentFilter] = useState('ALL')
+  const visible = devices.filter((device) => (statusFilter === 'ALL' || device.status === statusFilter)
+    && (agentFilter === 'ALL' || device.agentId === agentFilter))
+  const pages = Math.max(1, Math.ceil(total / 100))
+  async function remove(device: Device) {
+    if (!window.confirm(`Delete ${device.name} (${device.ipAddress})? This cannot be undone.`)) return
+    try { await request<void>(`/devices/${device.deviceId}`, token, { method: 'DELETE' }); onChanged() }
+    catch (reason) { onError(reason instanceof Error ? reason.message : 'Could not delete device') }
+  }
+  return <>
+    <section className="panel full-table-panel">
+      <div className="panel-heading full-table-heading"><div><span className="panel-kicker">INVENTORY</span><h2>Monitored devices</h2><p>{total} registered endpoints</p></div>
+        <div className="heading-actions"><select className="filter-select" aria-label="Filter device status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option>ONLINE</option><option>OFFLINE</option><option>UNKNOWN</option></select><select className="filter-select" aria-label="Filter devices by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="ALL">All agents</option>{agents.map((agent) => <option key={agent.agentId} value={agent.agentId}>{agent.name}</option>)}</select>{canManage && <button className="button button-primary" onClick={() => setEditing(null)}>Add device</button>}</div>
+      </div>
+      {visible.length ? <div className="table-scroll"><table className="data-table device-data-table"><thead><tr><th>DEVICE</th><th>TYPE</th><th>LOCATION</th><th>AGENT</th><th>STATUS</th><th>MONITORING</th><th>UPDATED</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((device) => <tr key={device.deviceId}>
+        <td><button className="table-link table-device" onClick={() => onOpenDevice(device.deviceId)}><span className={`table-device-icon ${device.status === 'OFFLINE' ? 'table-device-offline' : ''}`}><Server size={15} /></span><span><strong>{device.name}</strong><small>{device.hostname || device.ipAddress}</small></span></button></td><td><span className="device-type">{device.deviceType}</span></td><td className="location-cell">{device.location || 'Unassigned'}</td>
+        <td><button className="text-link" onClick={() => onOpenAgent(device.agentId)}>{agents.find((agent) => agent.agentId === device.agentId)?.name ?? device.agentId.slice(0, 8)}</button></td><td><StatusBadge status={device.status} /></td><td><span className={`monitoring-state ${device.monitoringEnabled ? 'monitoring-on' : ''}`}><span />{device.monitoringEnabled ? 'Enabled' : 'Paused'}</span></td><td className="time-cell">{formatRelative(device.updatedAt)}</td>
+        <td><div className="row-actions">{canManage && <button className="text-link" onClick={() => setEditing(device)}>Edit</button>}{canDelete && <button className="text-link danger-link" onClick={() => void remove(device)}>Delete</button>}</div></td>
+      </tr>)}</tbody></table></div> : <EmptyState icon={<Router size={20} />} title="No devices found" detail="Try a different search or register a device assigned to an agent." />}
+      <div className="table-pagination"><span>Showing {total ? page * 100 + 1 : 0}–{Math.min((page + 1) * 100, total)} of {total} devices</span><div><button className="button button-secondary" disabled={page === 0} onClick={() => onPageChange(page - 1)}>Previous</button><span>Page {page + 1} of {pages}</span><button className="button button-secondary" disabled={page + 1 >= pages} onClick={() => onPageChange(page + 1)}>Next</button></div></div>
+    </section>
+    {editing !== false && <DeviceForm initial={editing} agents={agents} token={token} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); onChanged() }} />}
+  </>
 }
-function AgentsView({ agents }: { agents: Agent[] }) {
-  return <section className="agent-card-grid">{agents.length ? agents.map((agent) => <article className="panel agent-card" key={agent.agentId}><div className="agent-card-top"><div className="agent-emblem"><RadioTower size={19} /></div><StatusBadge status={agent.status} /></div><h2>{agent.name}</h2><p className="agent-subtitle">{agent.segmentCidr}</p><div className="agent-card-rule" /><div className="agent-meta"><span>VERSION</span><strong>{agent.version || 'Not reported'}</strong></div><div className="agent-meta"><span>LAST HEARTBEAT</span><strong>{formatRelative(agent.lastHeartbeat)}</strong></div><div className="agent-meta"><span>REGISTERED</span><strong>{formatRelative(agent.registeredAt)}</strong></div><div className="agent-id">ID <code>{agent.agentId}</code></div></article>) : <div className="panel empty-agents"><EmptyState icon={<RadioTower size={20} />} title="No agents registered" detail="Registered network collectors will be listed here." /></div>}</section>
+
+function AgentsView({ agents, total, page, onPageChange, onOpenAgent }: {
+  agents: Agent[]; total: number; page: number; onPageChange: (page: number) => void; onOpenAgent: (id: string) => void
+}) {
+  const [statusFilter, setStatusFilter] = useState('ALL')
+  const visible = agents.filter((agent) => statusFilter === 'ALL' || agent.status === statusFilter)
+  const pages = Math.max(1, Math.ceil(total / 100))
+  return <>
+    <div className="view-toolbar"><span>{total} registered agents</span><select className="filter-select" aria-label="Filter agent status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option>ONLINE</option><option>OFFLINE</option><option>UNKNOWN</option></select></div>
+    <section className="agent-card-grid">{visible.length ? visible.map((agent) => <article className="panel agent-card" key={agent.agentId}><div className="agent-card-top"><div className="agent-emblem"><RadioTower size={19} /></div><StatusBadge status={agent.status} /></div><h2>{agent.name}</h2><p className="agent-subtitle">{agent.segmentCidr}</p><div className="agent-card-rule" /><div className="agent-meta"><span>VERSION</span><strong>{agent.version || 'Not reported'}</strong></div><div className="agent-meta"><span>LAST HEARTBEAT</span><strong>{formatRelative(agent.lastHeartbeat)}</strong></div><div className="agent-meta"><span>REGISTERED</span><strong>{formatRelative(agent.registeredAt)}</strong></div><div className="agent-id">ID <code>{agent.agentId}</code></div><button className="panel-footer-link" onClick={() => onOpenAgent(agent.agentId)}>View agent details <ArrowRight size={14} /></button></article>) : <div className="panel empty-agents"><EmptyState icon={<RadioTower size={20} />} title="No agents found" detail="Try a different search or status filter." /></div>}</section>
+    <div className="table-pagination"><span>Showing {total ? page * 100 + 1 : 0}–{Math.min((page + 1) * 100, total)} of {total} agents</span><div><button className="button button-secondary" disabled={page === 0} onClick={() => onPageChange(page - 1)}>Previous</button><span>Page {page + 1} of {pages}</span><button className="button button-secondary" disabled={page + 1 >= pages} onClick={() => onPageChange(page + 1)}>Next</button></div></div>
+  </>
 }
-function AlertsView({ alerts, onAlertAction, canResolve, readOnly }: { alerts: Alert[]; onAlertAction: (id: string, action: 'read' | 'resolve') => void; canResolve: boolean; readOnly?: boolean }) {
-  return <section className="panel full-alert-panel"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">ALERT CENTER</span><h2>Unread alerts</h2><p>Review and resolve incoming network events.</p></div><span className="alert-total"><Bell size={15} />{alerts.length} unread</span></div>{alerts.length ? <div className="alert-list full-alert-list">{alerts.map((alert) => <AlertRow key={alert.alertId} alert={alert} onAction={onAlertAction} canResolve={canResolve} readOnly={readOnly} />)}</div> : <EmptyState icon={<Check size={20} />} title="You're all caught up" detail="There are no unread alerts to review." />}</section>
+
+function DeviceForm({ initial, agents, token, onClose, onSaved }: {
+  initial: Device | null; agents: Agent[]; token: string; onClose: () => void; onSaved: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [name, setName] = useState(initial?.name ?? '')
+  const [ipAddress, setIpAddress] = useState(initial?.ipAddress ?? '')
+  const [hostname, setHostname] = useState(initial?.hostname ?? '')
+  const [deviceType, setDeviceType] = useState(initial?.deviceType ?? 'SERVER')
+  const [location, setLocation] = useState(initial?.location ?? '')
+  const [agentId, setAgentId] = useState(initial?.agentId ?? agents[0]?.agentId ?? '')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setFormError('')
+    try {
+      const body = JSON.stringify({ name, ipAddress, hostname: hostname || null, deviceType, location: location || null, agentId })
+      await request(initial ? `/devices/${initial.deviceId}` : '/devices', token, { method: initial ? 'PUT' : 'POST', body })
+      onSaved()
+    } catch (reason) { setFormError(reason instanceof Error ? reason.message : 'Could not save device') }
+    finally { setBusy(false) }
+  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="device-form-title">
+      <div className="panel-heading"><div><span className="panel-kicker">DEVICE INVENTORY</span><h2 id="device-form-title">{initial ? 'Edit device' : 'Register device'}</h2><p>Assign the device to an existing monitoring agent.</p></div><button className="icon-button" onClick={onClose} aria-label="Close device form"><X size={17} /></button></div>
+      <form className="device-form" onSubmit={submit}>
+        <label>Name<input className="text-input" maxLength={100} required value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label>IP address<input className="text-input" required value={ipAddress} onChange={(event) => setIpAddress(event.target.value)} placeholder="192.168.1.10" /></label>
+        <label>Hostname (optional)<input className="text-input" maxLength={255} value={hostname} onChange={(event) => setHostname(event.target.value)} /></label>
+        <label>Device type<input className="text-input" maxLength={40} required value={deviceType} onChange={(event) => setDeviceType(event.target.value)} placeholder="ROUTER, SERVER, SWITCH" /></label>
+        <label>Location (optional)<input className="text-input" maxLength={120} value={location} onChange={(event) => setLocation(event.target.value)} /></label>
+        <label>Monitoring agent<select className="filter-select form-select" required value={agentId} onChange={(event) => setAgentId(event.target.value)}><option value="" disabled>Select an agent</option>{agents.map((agent) => <option key={agent.agentId} value={agent.agentId}>{agent.name} · {agent.segmentCidr}</option>)}</select></label>
+        {!agents.length && <p className="form-note">Register an agent before adding devices.</p>}
+        {formError && <div className="auth-error" role="alert">{formError}</div>}
+        <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={busy || !agents.length}>{busy ? 'Saving…' : initial ? 'Save changes' : 'Register device'}</button></div>
+      </form>
+    </section>
+  </div>
 }
-function AlertRow({ alert, onAction, canResolve, readOnly }: { alert: Alert; onAction: (id: string, action: 'read' | 'resolve') => void; canResolve: boolean; readOnly?: boolean }) {
-  return <div className="alert-row"><span className={`alert-severity alert-severity-${alert.severity.toLowerCase()}`}><AlertTriangle size={15} /></span><div className="alert-body"><div className="alert-title-row"><strong>{alert.type.replaceAll('_', ' ')}</strong><span className={`severity-label severity-${alert.severity.toLowerCase()}`}>{alert.severity}</span></div><p>{alert.message}</p><div className="alert-meta"><span>{formatRelative(alert.createdAt)}</span>{alert.deviceId && <span>Device {alert.deviceId.slice(0, 8)}</span>}</div></div>{!readOnly && <div className="alert-actions"><button className="alert-action" onClick={() => onAction(alert.alertId, 'read')} title="Mark as read"><Check size={15} /><span>Mark read</span></button>{canResolve && alert.status !== 'RESOLVED' && <button className="alert-resolve" onClick={() => onAction(alert.alertId, 'resolve')} title="Resolve alert">Resolve</button>}</div>}</div>
+
+function MonitoringView({ results, devices, agents, onOpenDevice }: {
+  results: MonitoringResult[]; devices: Device[]; agents: Agent[]; onOpenDevice: (id: string) => void
+}) {
+  const [deviceId, setDeviceId] = useState('ALL')
+  const [agentId, setAgentId] = useState('ALL')
+  const [checkType, setCheckType] = useState('ALL')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const filtered = results.filter((result) => (deviceId === 'ALL' || result.deviceId === deviceId)
+    && (agentId === 'ALL' || result.agentId === agentId) && (checkType === 'ALL' || result.checkType === checkType)
+    && (!from || result.checkedAt.slice(0, 10) >= from) && (!to || result.checkedAt.slice(0, 10) <= to))
+  return <section className="panel full-table-panel">
+    <div className="panel-heading full-table-heading"><div><span className="panel-kicker">MONITORING HISTORY</span><h2>Recent checks</h2><p>Latest {results.length} results returned by the backend (maximum 500).</p></div>
+      <div className="heading-actions"><input className="filter-select" aria-label="Monitoring results from date" type="date" value={from} max={to || undefined} onChange={(event) => setFrom(event.target.value)} /><input className="filter-select" aria-label="Monitoring results to date" type="date" value={to} min={from || undefined} onChange={(event) => setTo(event.target.value)} /><select className="filter-select" aria-label="Filter by check type" value={checkType} onChange={(event) => setCheckType(event.target.value)}><option value="ALL">All check types</option><option>ICMP</option><option>PING</option><option>TCP</option><option>SNMP</option></select><select className="filter-select" aria-label="Filter by agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}><option value="ALL">All agents</option>{agents.map((agent) => <option key={agent.agentId} value={agent.agentId}>{agent.name}</option>)}</select><select className="filter-select" aria-label="Filter by device" value={deviceId} onChange={(event) => setDeviceId(event.target.value)}><option value="ALL">All devices</option>{devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.name}</option>)}</select></div>
+    </div>
+    <MonitoringResultsTable results={filtered} devices={devices} agents={agents} onOpenDevice={onOpenDevice} />
+    <div className="table-pagination">Showing {filtered.length} of {results.length} recent results</div>
+  </section>
+}
+
+function MonitoringResultsTable({ results, devices, agents, onOpenDevice }: {
+  results: MonitoringResult[]; devices: Device[]; agents: Agent[]; onOpenDevice?: (id: string) => void
+}) {
+  const deviceMap = new Map(devices.map((device) => [device.deviceId, device]))
+  const agentMap = new Map(agents.map((agent) => [agent.agentId, agent]))
+  if (!results.length) return <EmptyState icon={<Activity size={20} />} title="No monitoring results" detail="Results will appear here after an agent submits its first check." />
+  return <div className="table-scroll"><table className="data-table result-table"><thead><tr><th>CHECKED AT</th><th>DEVICE</th><th>AGENT</th><th>CHECK</th><th>STATUS</th><th>LATENCY</th><th>PACKET LOSS</th><th>PORT</th><th>SNMP DATA / ERROR</th></tr></thead><tbody>{[...results].sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt)).map((result) => {
+    const device = deviceMap.get(result.deviceId)
+    const agent = agentMap.get(result.agentId)
+    const snmp = readSnmpData(result.snmpData)
+    return <tr key={result.resultId}><td className="time-cell">{formatRelative(result.checkedAt)}</td><td>{device && onOpenDevice ? <button className="text-link" onClick={() => onOpenDevice(device.deviceId)}>{device.name}</button> : device?.name ?? result.deviceId.slice(0, 8)}<small className="subcell">{device?.ipAddress ?? ''}</small></td><td>{agent?.name ?? result.agentId.slice(0, 8)}</td><td><span className="check-type">{result.checkType}</span></td><td><StatusBadge status={result.available ? 'ONLINE' : 'OFFLINE'} /></td><td>{result.responseTimeMs == null ? '—' : `${result.responseTimeMs} ms`}</td><td>{result.packetLossPercent == null ? '—' : `${result.packetLossPercent}%`}</td><td>{result.portNumber == null ? '—' : <span>{result.portNumber} · {result.portOpen ? 'open' : 'closed'}</span>}</td><td className="snmp-cell">{snmp.length ? snmp.map(([key, value]) => <span key={key}>{key}: {value}</span>) : result.errorMessage || '—'}</td></tr>
+  })}</tbody></table></div>
+}
+
+function readSnmpData(value: string | null): [string, string][] {
+  if (!value) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return Object.entries(parsed).map(([key, item]) => [key, String(item)])
+  } catch { return [['SNMP', value]] }
+  return [['SNMP', String(value)]]
+}
+
+function ReportsView({ results, devices, agents }: { results: MonitoringResult[]; devices: Device[]; agents: Agent[] }) {
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const [from, setFrom] = useState(weekAgo)
+  const [to, setTo] = useState(today)
+  const filtered = results.filter((result) => result.checkedAt.slice(0, 10) >= from && result.checkedAt.slice(0, 10) <= to)
+  const successful = filtered.filter((result) => result.available)
+  const responseTimes = successful.map((result) => result.responseTimeMs).filter((time): time is number => time != null)
+  const packetLoss = filtered.map((result) => result.packetLossPercent).filter((loss): loss is number => loss != null)
+  const average = responseTimes.length ? Math.round(responseTimes.reduce((sum, value) => sum + value, 0) / responseTimes.length) : null
+  const meanLoss = packetLoss.length ? packetLoss.reduce((sum, value) => sum + value, 0) / packetLoss.length : null
+  function exportCsv() {
+    const deviceMap = new Map(devices.map((item) => [item.deviceId, item.name]))
+    const agentMap = new Map(agents.map((item) => [item.agentId, item.name]))
+    const headers = ['checkedAt', 'device', 'agent', 'checkType', 'available', 'responseTimeMs', 'packetLossPercent', 'portNumber', 'portOpen', 'snmpData', 'errorMessage']
+    const lines = [headers, ...filtered.map((result) => [result.checkedAt, deviceMap.get(result.deviceId) ?? result.deviceId, agentMap.get(result.agentId) ?? result.agentId, result.checkType, result.available, result.responseTimeMs ?? '', result.packetLossPercent ?? '', result.portNumber ?? '', result.portOpen ?? '', result.snmpData ?? '', result.errorMessage ?? ''])]
+    const csv = lines.map((line) => line.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\r\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a'); link.href = url; link.download = `netmoni-report-${from}-to-${to}.csv`; link.click(); URL.revokeObjectURL(url)
+  }
+  return <>
+    <section className="report-toolbar panel"><label>From<input className="filter-select" type="date" value={from} max={to} onChange={(event) => setFrom(event.target.value)} /></label><label>To<input className="filter-select" type="date" value={to} min={from} max={today} onChange={(event) => setTo(event.target.value)} /></label><button className="button button-secondary" onClick={exportCsv} disabled={!filtered.length}>Export CSV</button><span className="report-source">Based on up to 500 most recent API results</span></section>
+    <section className="metric-grid report-metrics"><MetricCard label="RESULT AVAILABILITY" value={filtered.length ? `${(100 * successful.length / filtered.length).toFixed(1)}%` : '—'} note={`${successful.length} successful checks`} icon={<Gauge size={18} />} tone="green" trend={`${filtered.length} results`} /><MetricCard label="AVERAGE RESPONSE" value={average == null ? '—' : `${average} ms`} note="Successful checks with latency" icon={<Activity size={18} />} tone="blue" trend={`${responseTimes.length} measurements`} /><MetricCard label="AVERAGE PACKET LOSS" value={meanLoss == null ? '—' : `${meanLoss.toFixed(2)}%`} note="ICMP results with packet data" icon={<Signal size={18} />} tone="amber" trend={`${packetLoss.length} measurements`} /><MetricCard label="TCP PORT CHECKS" value={String(filtered.filter((result) => result.checkType === 'TCP').length)} note="In selected period" icon={<Network size={18} />} tone="red" trend="From API results" /></section>
+    <section className="panel report-chart"><div className="panel-heading"><div><span className="panel-kicker">RESPONSE TREND</span><h2>Latency history</h2><p>Successful measurements in the selected period</p></div></div><div className="chart-wrap"><LatencyChart results={successful} /></div></section>
+    <section className="panel full-table-panel"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">EXPORT PREVIEW</span><h2>Filtered monitoring results</h2></div></div><MonitoringResultsTable results={filtered} devices={devices} agents={agents} /></section>
+  </>
+}
+
+function DeviceDetailView({ device, results, loading, onBack, onOpenAgent }: {
+  device?: Device; results: MonitoringResult[]; loading: boolean; onBack: () => void; onOpenAgent: (id: string) => void
+}) {
+  if (!device) return loading ? <LoadingState /> : <ConnectionState onRetry={onBack} />
+  return <>
+    <section className="detail-grid"><article className="panel detail-panel"><div className="panel-heading"><div><span className="panel-kicker">DEVICE</span><h2>{device.name}</h2><p>{device.ipAddress} · {device.hostname || 'Hostname unavailable'}</p></div><StatusBadge status={device.status} /></div><dl className="detail-list"><dt>Type</dt><dd>{device.deviceType}</dd><dt>Location</dt><dd>{device.location || 'Not provided'}</dd><dt>Monitoring</dt><dd>{device.monitoringEnabled ? 'Enabled' : 'Paused'}</dd><dt>Last updated</dt><dd>{formatRelative(device.updatedAt)}</dd><dt>Device ID</dt><dd><code>{device.deviceId}</code></dd><dt>Agent</dt><dd><button className="text-link" onClick={() => onOpenAgent(device.agentId)}>{device.agentId}</button></dd></dl><button className="button button-secondary" onClick={onBack}>Back to devices</button></article><article className="panel detail-panel"><div className="panel-heading"><div><span className="panel-kicker">HISTORY</span><h2>Recent response time</h2><p>Last 30 days returned by the backend</p></div></div><LatencyChart results={results} /></article></section>
+    <section className="panel full-table-panel"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">CHECKS</span><h2>Monitoring results</h2></div></div>{loading ? <LoadingState /> : <MonitoringResultsTable results={results} devices={[device]} agents={[]} />}</section>
+  </>
+}
+
+function AgentDetailView({ agent, devices, results, loading, onBack, onOpenDevice }: {
+  agent?: Agent; devices: Device[]; results: MonitoringResult[]; loading: boolean; onBack: () => void; onOpenDevice: (id: string) => void
+}) {
+  if (!agent) return loading ? <LoadingState /> : <ConnectionState onRetry={onBack} />
+  return <>
+    <section className="detail-grid"><article className="panel detail-panel"><div className="panel-heading"><div><span className="panel-kicker">AGENT</span><h2>{agent.name}</h2><p>{agent.segmentCidr} · version {agent.version || 'unknown'}</p></div><StatusBadge status={agent.status} /></div><dl className="detail-list"><dt>Agent ID</dt><dd><code>{agent.agentId}</code></dd><dt>Registered</dt><dd>{formatTime(agent.registeredAt)}</dd><dt>Last heartbeat</dt><dd>{formatRelative(agent.lastHeartbeat)}</dd><dt>Associated devices</dt><dd>{devices.length}</dd></dl><button className="button button-secondary" onClick={onBack}>Back to agents</button></article><article className="panel detail-panel"><div className="panel-heading"><div><span className="panel-kicker">RECENT ACTIVITY</span><h2>{results.length} checks</h2><p>Recent results recorded by this agent</p></div></div><MonitoringResultsTable results={results} devices={devices} agents={[agent]} onOpenDevice={onOpenDevice} /></article></section>
+    <section className="panel full-table-panel"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">ASSOCIATED DEVICES</span><h2>Managed devices</h2></div></div>{devices.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>NAME</th><th>ADDRESS</th><th>STATUS</th><th>LAST UPDATED</th></tr></thead><tbody>{devices.map((device) => <tr key={device.deviceId}><td><button className="text-link" onClick={() => onOpenDevice(device.deviceId)}>{device.name}</button></td><td>{device.ipAddress}</td><td><StatusBadge status={device.status} /></td><td>{formatRelative(device.updatedAt)}</td></tr>)}</tbody></table></div> : <EmptyState icon={<Server size={20} />} title="No devices assigned" detail="Devices assigned to this agent will appear here." />}</section>
+  </>
+}
+function AlertsView({ alerts, total, page, onPageChange, onAlertAction, canResolve }: { alerts: Alert[]; total: number; page: number; onPageChange: (page: number) => void; onAlertAction: (id: string, action: 'read' | 'resolve') => void; canResolve: boolean }) {
+  const [status, setStatus] = useState('ALL')
+  const [severity, setSeverity] = useState('ALL')
+  const [search, setSearch] = useState('')
+  const filtered = alerts.filter((alert) => (status === 'ALL' || alert.status === status)
+    && (severity === 'ALL' || alert.severity === severity)
+    && `${alert.type} ${alert.message} ${alert.deviceId ?? ''} ${alert.agentId ?? ''}`.toLowerCase().includes(search.toLowerCase()))
+  return <section className="panel full-alert-panel"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">ALERT CENTER</span><h2>Network alerts</h2><p>Review unread items or inspect resolved events.</p></div><span className="alert-total"><Bell size={15} />{alerts.filter((alert) => alert.status === 'UNREAD').length} unread</span></div>
+    <div className="view-toolbar"><span>{total} alerts</span><div><label className="search-box"><Search size={15} /><input aria-label="Search alerts" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search alerts" /></label><select className="filter-select" aria-label="Filter alerts by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="ALL">All statuses</option><option>UNREAD</option><option>READ</option><option>RESOLVED</option></select><select className="filter-select" aria-label="Filter alerts by severity" value={severity} onChange={(event) => setSeverity(event.target.value)}><option value="ALL">All severities</option><option>CRITICAL</option><option>WARNING</option><option>INFO</option></select></div></div>
+    {filtered.length ? <div className="alert-list full-alert-list">{filtered.map((alert) => <AlertRow key={alert.alertId} alert={alert} onAction={onAlertAction} canResolve={canResolve} />)}</div> : <EmptyState icon={<Check size={20} />} title="No alerts match" detail="Change the status or severity filters to see other alerts." />}
+    <div className="table-pagination"><span>Showing {total ? page * 100 + 1 : 0}–{Math.min((page + 1) * 100, total)} of {total} alerts</span><div><button className="button button-secondary" disabled={page === 0} onClick={() => onPageChange(page - 1)}>Previous</button><span>Page {page + 1} of {Math.max(1, Math.ceil(total / 100))}</span><button className="button button-secondary" disabled={(page + 1) * 100 >= total} onClick={() => onPageChange(page + 1)}>Next</button></div></div>
+  </section>
+}
+function AlertRow({ alert, onAction, canResolve }: { alert: Alert; onAction: (id: string, action: 'read' | 'resolve') => void; canResolve: boolean }) {
+  return <div className="alert-row"><span className={`alert-severity alert-severity-${alert.severity.toLowerCase()}`}><AlertTriangle size={15} /></span><div className="alert-body"><div className="alert-title-row"><strong>{alert.type.replaceAll('_', ' ')}</strong><span className={`severity-label severity-${alert.severity.toLowerCase()}`}>{alert.severity}</span><span className="alert-status-label">{alert.status}</span></div><p>{alert.message}</p><div className="alert-meta"><span>{formatRelative(alert.createdAt)}</span>{alert.deviceId && <span>Device {alert.deviceId.slice(0, 8)}</span>}{alert.agentId && <span>Agent {alert.agentId.slice(0, 8)}</span>}{alert.resolvedAt && <span>Resolved {formatRelative(alert.resolvedAt)}</span>}</div></div><div className="alert-actions">{alert.status === 'UNREAD' && <button className="alert-action" onClick={() => onAction(alert.alertId, 'read')} title="Mark as read"><Check size={15} /><span>Mark read</span></button>}{canResolve && alert.status !== 'RESOLVED' && <button className="alert-resolve" onClick={() => { if (window.confirm(`Resolve alert “${alert.type.replaceAll('_', ' ')}”?`)) onAction(alert.alertId, 'resolve') }} title="Resolve alert">Resolve</button>}</div></div>
 }
 function StatusBadge({ status }: { status: string }) {
   return <span className={`status-badge status-${status.toLowerCase()}`}><span />{status}</span>
