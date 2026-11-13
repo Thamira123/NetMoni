@@ -72,6 +72,12 @@ Device and monitoring WebSocket updates are emitted after processing. Delivery i
 
 The agent discovers reachable IPs and reverse-DNS hostnames and registers them with `device.discovered`. The server validates the addresses against the agent's registered subnet, stores devices idempotently, and returns the UUIDs used for monitoring results. The current result DTO does not expose local MAC/interface identity or normalized SNMP interface metrics.
 
+## Dashboard requested scans
+
+The authenticated dashboard starts a scan with `POST /api/discovery/agents/{agentId}/scan`. The backend persists a `QUEUED` scan and rejects requests for offline agents or agents with an active scan. Agents poll the existing outbound TCP protocol with `discovery.poll`; the backend returns `discovery.command` with a scan ID until the agent acknowledges it with `discovery.started`. Agents report `discovery.progress`, register reachable devices using `device.discovered` with that scan ID, then send `discovery.completed` or `discovery.failed`. The backend persists state and publishes `discovery.started`, `discovery.progress`, `discovery.completed`, and `discovery.failed` on `/topic/discovery`. This command polling works with the current one-request-per-socket agent transport and does not require backend-initiated connections.
+
+The dashboard reads the latest scan at `GET /api/discovery/agents/{agentId}/scan`, history at `/scans`, and registered results at `/devices`. Scan starts require ADMIN or OPERATOR; reads require authentication. Scan devices are limited to the agent's configured registered IPv4 subnet and existing duplicate-safe device registration path.
+
 TLS and agent authentication are not implemented by the backend. The current listener defaults to loopback (`127.0.0.1:9001`); the agent must not connect across an untrusted network until both sides implement and verify the same TLS/authentication contract.
 
 ## REST endpoints

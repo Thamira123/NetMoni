@@ -48,7 +48,7 @@ public final class BackendClient {
                 if (response.hasNonNull("message") || "error".equals(response.path("type").asText())) {
                     throw new IOException("Backend rejected message: " + response.path("message").asText());
                 }
-                if (!expectedType.equals(response.path("type").asText())) {
+                if (expectedType != null && !expectedType.equals(response.path("type").asText())) {
                     throw new IOException("Unexpected backend acknowledgement type: " + response.path("type").asText());
                 }
                 String agentId = message.path("agentId").asText(null);

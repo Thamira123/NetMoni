@@ -38,10 +38,14 @@ const alert = {
 
 beforeEach(() => {
   sessionStorage.clear()
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), window.location.origin)
+    if (url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scan') && url.search === '' && initMethod(input, init) === 'GET') return new Response(null, { status: 204 })
+    if (url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/devices')) return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
     const response = url.pathname === '/api/auth/login'
       ? { accessToken: 'test-jwt', username: 'viewer@example.com', role: 'VIEWER', expiresAt: '2099-01-01T00:00:00Z' }
+      : url.pathname.endsWith('/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scan') && initMethod(input, init) === 'POST'
+        ? { scanId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', agentId: agent.agentId, status: 'QUEUED', progress: 0, checked: 0, discovered: 0, failed: 0, createdAt: '2026-11-13T00:00:00Z' }
       : url.pathname === '/api/dashboard/summary'
         ? summary
         : url.pathname === '/api/monitoring-results/recent'
@@ -73,7 +77,7 @@ describe('NetMoni application', () => {
     expect(await screen.findByRole('heading', { name: 'Good network, good day.' })).toBeInTheDocument()
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/auth/login', expect.objectContaining({ method: 'POST' })))
     expect(sessionStorage.getItem('netmoni-session')).toContain('test-jwt')
-    expect(screen.getByText('12 ms')).toBeInTheDocument()
+    expect(screen.getByText('100.0%')).toBeInTheDocument()
   })
 
   it('renders backend device, agent, monitoring, and alert data on their pages', async () => {
@@ -95,4 +99,20 @@ describe('NetMoni application', () => {
     fireEvent.change(screen.getByLabelText('Filter alerts by severity'), { target: { value: 'CRITICAL' } })
     expect(screen.getByText('No alerts match')).toBeInTheDocument()
   })
+
+  it('queues a subnet scan from the Network Discovery page', async () => {
+    sessionStorage.setItem('netmoni-session', JSON.stringify({ accessToken: 'test-jwt', username: 'operator@example.com', role: 'OPERATOR', expiresAt: '2099-01-01T00:00:00Z' }))
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Good network, good day.' })
+    const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    fireEvent.click(within(navigation).getByRole('button', { name: /Network discovery/ }))
+    expect(await screen.findByRole('heading', { name: 'Discover devices automatically' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start scan' }))
+    expect(await screen.findByRole('button', { name: 'Scan in progress' })).toBeDisabled()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/discovery/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/scan', expect.objectContaining({ method: 'POST' })))
+  })
 })
+
+function initMethod(_input: RequestInfo | URL, init?: RequestInit) {
+  return init?.method ?? 'GET'
+}

@@ -10,7 +10,7 @@ import { ApiError, request, webSocketUrl } from './services/api'
 import './App.css'
 
 type Role = 'ADMIN' | 'OPERATOR' | 'VIEWER'
-type ViewKey = 'overview' | 'devices' | 'agents' | 'monitoring' | 'alerts' | 'reports' | 'device-detail' | 'agent-detail'
+type ViewKey = 'overview' | 'devices' | 'agents' | 'network-discovery' | 'monitoring' | 'alerts' | 'reports' | 'device-detail' | 'agent-detail'
 
 interface AuthSession { accessToken: string; username: string; role: Role; expiresAt?: string }
 interface Page<T> { content: T[]; totalElements: number }
@@ -48,6 +48,7 @@ const navItems: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] 
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
   { key: 'devices', label: 'Devices', icon: Router },
   { key: 'agents', label: 'Agents', icon: RadioTower },
+  { key: 'network-discovery', label: 'Network discovery', icon: Network },
   { key: 'monitoring', label: 'Monitoring', icon: Activity },
   { key: 'alerts', label: 'Alerts', icon: Bell },
   { key: 'reports', label: 'Reports', icon: Gauge },
@@ -107,6 +108,7 @@ function App() {
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [discoveryRevision, setDiscoveryRevision] = useState(0)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [devicePageNumber, setDevicePageNumber] = useState(0)
   const [agentPageNumber, setAgentPageNumber] = useState(0)
@@ -145,9 +147,8 @@ function App() {
       heartbeatOutgoing: 10000,
       onConnect: () => {
         setLive(true)
-        for (const topic of ['/topic/dashboard', '/topic/devices', '/topic/monitoring', '/topic/alerts', '/topic/agents']) {
-          client.subscribe(topic, () => void synchronize())
-        }
+        for (const topic of ['/topic/dashboard', '/topic/devices', '/topic/monitoring', '/topic/alerts', '/topic/agents']) client.subscribe(topic, () => void synchronize())
+        client.subscribe('/topic/discovery', () => { setDiscoveryRevision(value => value + 1); void synchronize() })
       },
       onWebSocketClose: () => setLive(false),
       onStompError: () => setLive(false),
@@ -247,6 +248,7 @@ function App() {
         {snapshot && view === 'overview' && overviewSnapshot && <Overview summary={summary} snapshot={overviewSnapshot} onNavigate={setView} onAlertAction={updateAlert} />}
         {snapshot && view === 'devices' && <DevicesView devices={matchingDevices} total={snapshot.deviceTotal} page={devicePageNumber} onPageChange={setDevicePageNumber} canManage={session.role !== 'VIEWER'} canDelete={session.role === 'ADMIN'} agents={snapshot.agents} onOpenDevice={openDevice} onOpenAgent={openAgent} token={session.accessToken} onChanged={() => setRefreshKey((key) => key + 1)} onError={setError} />}
         {snapshot && view === 'agents' && <AgentsView agents={matchingAgents} total={snapshot.agentTotal} page={agentPageNumber} onPageChange={setAgentPageNumber} onOpenAgent={openAgent} />}
+        {snapshot && view === 'network-discovery' && <NetworkDiscoveryView agents={snapshot.agents} token={session.accessToken} canManage={session.role !== 'VIEWER'} revision={discoveryRevision} onError={setError} />}
         {snapshot && view === 'monitoring' && <MonitoringView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} onOpenDevice={openDevice} />}
         {snapshot && view === 'alerts' && <AlertsView alerts={snapshot.alerts} total={snapshot.alertTotal} page={alertPageNumber} onPageChange={setAlertPageNumber} onAlertAction={updateAlert} canResolve={session.role !== 'VIEWER'} />}
         {snapshot && view === 'reports' && <ReportsView results={snapshot.recentResults} devices={snapshot.devices} agents={snapshot.agents} />}
@@ -263,6 +265,7 @@ function pageDescription(view: ViewKey) {
     overview: 'A clear view of your infrastructure, all in one place.',
     devices: 'Every monitored endpoint across your network.',
     agents: 'Collectors reporting into your monitoring network.',
+    'network-discovery': 'Scan an agent subnet and automatically register reachable devices.',
     monitoring: 'Recent checks and results received from monitoring agents.',
     alerts: 'Events that need a closer look from your team.',
     reports: 'Availability and response trends from real monitoring results.',
@@ -371,6 +374,25 @@ function MonitoringTable({ results, devices }: { results: MonitoringResult[]; de
     return <tr key={result.resultId}><td><span className="table-device"><span className="table-device-icon"><Cpu size={15} /></span><span><strong>{device?.name ?? 'Unknown device'}</strong><small>{device?.ipAddress ?? result.deviceId.slice(0, 8)}</small></span></span></td><td><span className="check-type">{result.checkType}</span></td><td><StatusBadge status={result.available ? 'ONLINE' : 'OFFLINE'} /></td><td className="latency-cell">{result.responseTimeMs == null ? '--' : `${result.responseTimeMs} ms`}</td><td className="time-cell">{formatRelative(result.checkedAt)}</td></tr>
   })}</tbody></table></div>
 }
+interface Scan { scanId: string; agentId: string; status: 'QUEUED'|'RUNNING'|'COMPLETED'|'FAILED'; progress: number; checked: number; discovered: number; failed: number; newDevices: number; existingDevices: number; createdAt: string; startedAt: string|null; finishedAt: string|null; durationMs: number|null; errorMessage: string|null }
+function NetworkDiscoveryView({ agents, token, canManage, revision, onError }: { agents: Agent[]; token: string; canManage: boolean; revision:number; onError: (message:string)=>void }) {
+  const [agentId,setAgentId]=useState(agents.find(a=>a.status==='ONLINE')?.agentId ?? agents[0]?.agentId ?? '')
+  const [scan,setScan]=useState<Scan|null>(null); const [devices,setDevices]=useState<Device[]>([]); const [search,setSearch]=useState(''); const [page,setPage]=useState(0); const [busy,setBusy]=useState(false)
+  const selected=agents.find(a=>a.agentId===agentId); const active=scan?.status==='QUEUED'||scan?.status==='RUNNING'
+  useEffect(()=>{ if(!agentId)return; let alive=true; const refresh=async()=>{try{const [latest,found]=await Promise.all([request<Scan|undefined>(`/discovery/agents/${agentId}/scan`,token),request<Device[]>(`/discovery/agents/${agentId}/devices`,token)]);if(alive){if(latest)setScan(latest);setDevices(found)}}catch(e){if(alive)onError(e instanceof Error?e.message:'Unable to load discovery data')}}; void refresh(); const timer=window.setInterval(()=>void refresh(),active?1500:15000); return()=>{alive=false;window.clearInterval(timer)} },[agentId,token,active,revision,onError])
+  async function start(){if(!agentId)return;setBusy(true);try{const next=await request<Scan>(`/discovery/agents/${agentId}/scan`,token,{method:'POST'});setScan(next)}catch(e){onError(e instanceof Error?e.message:'Unable to start scan')}finally{setBusy(false)}}
+  const filtered=devices.filter(d=>`${d.name} ${d.ipAddress} ${d.hostname??''} ${d.status}`.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>a.ipAddress.localeCompare(b.ipAddress,undefined,{numeric:true}))
+  const visible=filtered.slice(page*10,page*10+10)
+  return <div className="discovery-view">
+    <section className="panel discovery-controls"><div><span className="panel-kicker">AGENT SUBNET SCAN</span><h2>Discover devices automatically</h2><p>Select an online agent. The scan runs from that agent on its registered subnet.</p></div><label className="field-label">Agent<select className="text-input" value={agentId} onChange={e=>{setAgentId(e.target.value);setScan(null);setPage(0)}}><option value="">Select an agent</option>{agents.map(a=><option key={a.agentId} value={a.agentId}>{a.name} · {a.segmentCidr} · {a.status}</option>)}</select></label><button className="button button-primary" onClick={()=>void start()} disabled={!canManage||!selected||selected.status!=='ONLINE'||active||busy}>{busy?'Starting…':active?'Scan in progress':'Start scan'}</button>{selected?.status!=='ONLINE'&&<small className="discovery-note">Agent must be online to receive a scan command.</small>}</section>
+    <section className="metric-grid discovery-stats"><MetricCard label="SCAN STATUS" value={scan?.status??'READY'} note={scan?.startedAt?`Started ${formatRelative(scan.startedAt)}`:'No scan started'} icon={<Activity size={18}/>} tone="blue" trend={scan?.progress!=null?`${scan.progress}% complete`:'Waiting for scan'} /><MetricCard label="CHECKED" value={String(scan?.checked??0)} note="Addresses probed" icon={<Search size={18}/>} tone="amber" trend={selected?.segmentCidr??'No subnet'} /><MetricCard label="DISCOVERED" value={String(scan?.discovered??0)} note="Reachable devices" icon={<Server size={18}/>} tone="green" trend={`${devices.length} registered`} /><MetricCard label="NEW DEVICES" value={String(scan?.newDevices??0)} note="Added by this scan" icon={<Check size={18}/>} tone="green" trend="Automatic registration" /><MetricCard label="EXISTING" value={String(scan?.existingDevices??0)} note="Already registered" icon={<Router size={18}/>} tone="blue" trend="No duplicates created" /><MetricCard label="UNREACHABLE" value={String(scan?.failed??0)} note="No response detected" icon={<AlertTriangle size={18}/>} tone="red" trend={scan?.durationMs!=null?`${(scan.durationMs/1000).toFixed(1)}s duration`:'—'} /></section>
+    {active&&<section className="panel discovery-progress"><div className="panel-heading"><div><span className="panel-kicker">SCAN PROGRESS</span><h2>{scan?.progress??0}%</h2></div><span className="mini-status">{scan?.status}</span></div><div className="status-track"><span style={{width:`${scan?.progress??0}%`}}/></div></section>}
+    {scan?.status==='FAILED'&&<div className="error-banner" role="alert"><AlertTriangle size={17}/><span>{scan.errorMessage??'The scan failed.'}</span></div>}
+    <section className="panel table-panel discovery-table"><div className="panel-heading full-table-heading"><div><span className="panel-kicker">REGISTERED RESULTS</span><h2>Devices on {selected?.segmentCidr??'selected subnet'}</h2></div><label className="search-box"><Search size={16}/><input aria-label="Search discovered devices" placeholder="Search devices" value={search} onChange={e=>{setSearch(e.target.value);setPage(0)}}/></label></div>{visible.length?<div className="table-scroll"><table className="data-table"><thead><tr><th>DEVICE</th><th>HOSTNAME</th><th>IP ADDRESS</th><th>STATUS</th><th>LAST UPDATED</th></tr></thead><tbody>{visible.map(d=><tr key={d.deviceId}><td>{d.name}</td><td>{d.hostname??'—'}</td><td>{d.ipAddress}</td><td><StatusBadge status={d.status}/></td><td>{formatRelative(d.updatedAt)}</td></tr>)}</tbody></table></div>:<EmptyState icon={<Network size={20}/>} title="No devices to show" detail="Run a scan from an online agent to discover and register subnet devices."/>}<div className="table-pagination"><span>{filtered.length} devices</span><div><button className="button button-secondary" disabled={page===0} onClick={()=>setPage(p=>p-1)}>Previous</button><button className="button button-secondary" disabled={(page+1)*10>=filtered.length} onClick={()=>setPage(p=>p+1)}>Next</button></div></div></section>
+    {scan&&<p className="discovery-last-scan">Last scan {formatRelative(scan.finishedAt??scan.createdAt)}{scan.status==='COMPLETED'?` · ${scan.discovered} reachable · ${scan.failed} unreachable`:''}</p>}
+  </div>
+}
+
 function DevicesView({ devices, total, page, onPageChange, canManage, canDelete, agents, onOpenDevice, onOpenAgent, token, onChanged, onError }: {
   devices: Device[]; total: number; page: number; onPageChange: (page: number) => void; canManage: boolean; canDelete: boolean
   agents: Agent[]; onOpenDevice: (id: string) => void; onOpenAgent: (id: string) => void; token: string; onChanged: () => void; onError: (message: string) => void

@@ -32,6 +32,11 @@ public class ApiExceptionHandler {
 				.body(Map.of("error", "invalid_request", "message", exception.getMessage()));
 	}
 
+	@ExceptionHandler(IllegalStateException.class)
+	public ResponseEntity<Map<String,String>> handleConflict(IllegalStateException exception) {
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error","conflict","message",exception.getMessage()));
+	}
+
 	@ExceptionHandler(MethodArgumentNotValidException.class)
 	public ResponseEntity<Map<String, String>> handleValidation(MethodArgumentNotValidException exception) {
 		String message = exception.getBindingResult().getFieldErrors().stream().findFirst()

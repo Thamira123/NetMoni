@@ -294,3 +294,16 @@
   .metric-grid { grid-template-columns: 1fr 1fr; }.metric-card { min-height: 101px; }.metric-card-top { align-items: flex-start; }.metric-card-top > span { max-width: 88px; line-height: 1.4; }.metric-bottom { font-size: 9px; }
   .fleet-donut { flex-basis: 110px; width: 110px; height: 110px; }.fleet-donut::before { width: 80px; height: 80px; }.fleet-legend { min-width: 95px; }.breadcrumb { gap: 6px; font-size: 10px; }.connection-pill { font-size: 9px; }
 }
+
+.discovery-view { display:grid; gap:18px; }
+.discovery-controls { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,300px) auto; align-items:end; gap:18px; padding:22px; }
+.discovery-controls h2,.discovery-progress h2 { margin:5px 0; font-size:19px; }
+.discovery-controls p { margin:0; color:#78857e; font-size:13px; }
+.discovery-controls .field-label { display:grid; gap:7px; }
+.discovery-note { grid-column:2/4; color:#9a6c28; }
+.discovery-stats { margin:0; }
+.discovery-progress { padding:20px; }
+.discovery-progress .status-track { height:8px; margin-top:12px; }
+.discovery-table { margin-top:0; }
+.discovery-last-scan { margin:0; color:#78857e; font-size:12px; }
+@media(max-width:700px){.discovery-controls{grid-template-columns:1fr}.discovery-note{grid-column:auto}.discovery-controls .button{width:100%}}

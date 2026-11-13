@@ -16,6 +16,7 @@ import com.netmoni.server.dto.agent.DiscoveredDeviceResponse;
 import com.netmoni.server.service.AgentRegistrationService;
 import com.netmoni.server.service.DeviceService;
 import com.netmoni.server.service.MonitoringResultService;
+import com.netmoni.server.service.DiscoveryScanService;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -40,6 +41,17 @@ class AgentTcpServerTest {
 		assertEquals(agentId, response.agentId());
 		assertEquals(registered, response.devices());
 		verify(deviceService).registerDiscovered(agentId, discovered);
+		server.stop();
+	}
+
+	@Test void agentPollReceivesPersistedQueuedScanCommand() {
+		UUID agentId=UUID.randomUUID(), scanId=UUID.randomUUID();
+		DiscoveryScanService scans=mock(DiscoveryScanService.class); when(scans.poll(agentId)).thenReturn(scanId);
+		AgentRegistrationService registrations=mock(AgentRegistrationService.class);
+		when(registrations.getAgent(agentId)).thenReturn(new com.netmoni.server.dto.agent.AgentResponse(agentId,"edge","10.0.0.0/24","1",com.netmoni.server.entity.AgentStatus.ONLINE,java.time.Instant.now(),java.time.Instant.now()));
+		AgentTcpServer server=new AgentTcpServer(mock(ObjectMapper.class),registrations,mock(MonitoringResultService.class),mock(DeviceService.class),scans,"127.0.0.1",9001);
+		var response=server.processMessage(new AgentTcpMessage("discovery.poll",agentId,null,null,null,null,null,null,null,null,null,null,null,null,null,null));
+		assertEquals("discovery.command",response.type()); assertEquals(scanId,response.scanId());
 		server.stop();
 	}
 }

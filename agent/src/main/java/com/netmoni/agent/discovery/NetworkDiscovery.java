@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,22 +29,28 @@ public final class NetworkDiscovery {
     }
 
     public List<DiscoveredDevice> scan() {
+        return scan((checked,total)->{});
+    }
+    public List<DiscoveredDevice> scan(BiConsumer<Integer,Integer> progress) {
         List<Future<DiscoveredDevice>> futures = new ArrayList<>();
         for (String ip : config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS)) {
             futures.add(workers.submit(() -> probe(ip)));
         }
         List<DiscoveredDevice> devices = new ArrayList<>();
+        AtomicInteger checked = new AtomicInteger();
         for (Future<DiscoveredDevice> future : futures) {
             try {
                 DiscoveredDevice device = future.get();
                 if (device != null) {
                     devices.add(device);
                 }
+                progress.accept(checked.incrementAndGet(), futures.size());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("Network discovery was interrupted", exception);
             } catch (ExecutionException exception) {
                 logger.warn("Discovery probe failed: {}", exception.getCause().getMessage());
+                progress.accept(checked.incrementAndGet(), futures.size());
             }
         }
         return List.copyOf(devices);

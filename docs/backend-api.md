@@ -36,3 +36,13 @@ For browser clients hosted on a separate origin, configure `FRONTEND_ALLOWED_ORI
 - `GET /api/alerts?status=UNREAD&severity=CRITICAL&page=0&size=50`, `PATCH /api/alerts/{id}/read`, `PATCH /api/alerts/{id}/resolve` (page size max 100). Severity values are `INFO`, `WARNING`, and `CRITICAL`.
 
 Invalid inputs return HTTP 400, unknown resources HTTP 404, and unauthenticated requests HTTP 401. Authenticated users without a required role receive HTTP 403.
+# Network discovery
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/api/discovery/agents/{agentId}/scan` | ADMIN, OPERATOR | Queue a scan for an online agent (202 Accepted). |
+| GET | `/api/discovery/agents/{agentId}/scan` | Authenticated | Return the latest scan or 204 when none exists. |
+| GET | `/api/discovery/agents/{agentId}/scans` | Authenticated | Return the latest 20 scans. |
+| GET | `/api/discovery/agents/{agentId}/devices` | Authenticated | Return registered devices for scan results. |
+
+Only one queued/running scan is allowed for an agent. Agents poll their command through `discovery.poll` on the agent TCP protocol; the dashboard cannot scan a subnet from the browser.

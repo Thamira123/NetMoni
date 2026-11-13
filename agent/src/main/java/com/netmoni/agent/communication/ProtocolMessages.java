@@ -30,9 +30,13 @@ public final class ProtocolMessages {
     }
 
     public static ObjectNode discoveredDevices(ObjectMapper mapper, UUID agentId, List<DiscoveredDevice> devices) {
+        return discoveredDevices(mapper, agentId, devices, null);
+    }
+    public static ObjectNode discoveredDevices(ObjectMapper mapper, UUID agentId, List<DiscoveredDevice> devices, UUID scanId) {
         ObjectNode message = mapper.createObjectNode();
         message.put("type", "device.discovered");
         message.put("agentId", agentId.toString());
+        if (scanId != null) message.put("scanId", scanId.toString());
         var entries = message.putArray("devices");
         for (DiscoveredDevice device : devices) {
             var entry = entries.addObject();
@@ -40,6 +44,12 @@ public final class ProtocolMessages {
             if (device.hostname() != null) entry.put("hostname", device.hostname());
             if (device.discoveredAt() != null) entry.put("discoveredAt", device.discoveredAt().toString());
         }
+        return message;
+    }
+    public static ObjectNode discoveredDevices(ObjectMapper mapper, UUID agentId, List<DiscoveredDevice> devices,
+                                                UUID scanId, int progress, int checked, int failed) {
+        ObjectNode message=discoveredDevices(mapper,agentId,devices,scanId);
+        if(scanId!=null){message.put("progress",progress);message.put("checked",checked);message.put("discovered",devices.size());message.put("failed",failed);}
         return message;
     }
 
@@ -62,5 +72,15 @@ public final class ProtocolMessages {
                     Math.min(result.errorMessage().length(), 1000)));
         }
         return message;
+    }
+
+    public static ObjectNode discoveryCommand(ObjectMapper mapper, UUID agentId) { ObjectNode m=mapper.createObjectNode(); m.put("type","discovery.poll"); m.put("agentId",agentId.toString()); return m; }
+    public static ObjectNode discoveryEvent(ObjectMapper mapper, UUID agentId, UUID scanId, String type, int progress, int checked, int discovered, int failed, long durationMs, String error) {
+        return discoveryEvent(mapper,agentId,scanId,type,progress,checked,discovered,failed,0,0,durationMs,error);
+    }
+    public static ObjectNode discoveryEvent(ObjectMapper mapper, UUID agentId, UUID scanId, String type, int progress, int checked, int discovered, int failed, int newDevices, int existingDevices, long durationMs, String error) {
+        ObjectNode m=mapper.createObjectNode(); m.put("type",type); m.put("agentId",agentId.toString()); m.put("scanId",scanId.toString());
+        m.put("progress",progress); m.put("checked",checked); m.put("discovered",discovered); m.put("failed",failed); m.put("newDevices",newDevices); m.put("existingDevices",existingDevices); m.put("durationMs",durationMs);
+        if(error!=null)m.put("errorMessage",error); return m;
     }
 }

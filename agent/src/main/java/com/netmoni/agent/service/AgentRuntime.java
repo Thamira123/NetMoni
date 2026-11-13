@@ -72,6 +72,7 @@ public final class AgentRuntime implements AutoCloseable {
                 TimeUnit.SECONDS);
         scheduler.scheduleWithFixedDelay(this::flushOutbox, 1,
                 config.outboxFlushIntervalSeconds(), TimeUnit.SECONDS);
+        scheduler.scheduleWithFixedDelay(this::pollDiscoveryCommand, 2, 2, TimeUnit.SECONDS);
     }
 
     private void register() {
@@ -122,6 +123,57 @@ public final class AgentRuntime implements AutoCloseable {
                 discoveryRunning.set(false);
             }
         });
+    }
+
+    private void pollDiscoveryCommand() {
+        if (!registered.get()) return;
+        try {
+            JsonNode response = backend.send(ProtocolMessages.discoveryCommand(mapper, config.agentId()), null);
+            if ("discovery.command".equals(response.path("type").asText()) && response.hasNonNull("scanId")) {
+                UUID scanId = UUID.fromString(response.path("scanId").asText());
+                if (discoveryRunning.compareAndSet(false, true)) workers.execute(() -> runRequestedScan(scanId));
+            }
+        } catch (IOException | IllegalArgumentException exception) {
+            logger.debug("Could not poll queued discovery command: {}", exception.getMessage());
+        }
+    }
+
+    private void runRequestedScan(UUID scanId) {
+        long startedAt = System.nanoTime();
+        AtomicInteger lastReported = new AtomicInteger(-1);
+        AtomicInteger newDevices = new AtomicInteger();
+        AtomicInteger existingDevices = new AtomicInteger();
+        try {
+            backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.started", 0, 0, 0, 0, 0, null), "discovery.idle");
+            List<DiscoveredDevice> found = discovery.scan((checked, total) -> {
+                int percent = total == 0 ? 100 : checked * 100 / total;
+                if (percent == 100 || percent / 5 > lastReported.get()) {
+                    lastReported.set(percent / 5);
+                    try { backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.progress", percent, checked, 0, 0, 0, null), "discovery.idle"); }
+                    catch (IOException exception) { throw new IllegalStateException("Could not report scan progress", exception); }
+                }
+            });
+            if (!found.isEmpty()) {
+                int total = config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS).size();
+                var ack = backend.send(ProtocolMessages.discoveredDevices(mapper, config.agentId(), found, scanId, 100, total, Math.max(0,total-found.size())), "device.discovery.accepted");
+                mergeDeviceMappings(config.subnet(), deviceIds, ack.path("devices"));
+                for (JsonNode mapping : ack.path("devices")) {
+                    if (mapping.path("created").asBoolean(false)) newDevices.incrementAndGet(); else existingDevices.incrementAndGet();
+                }
+                backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.progress", 100, total, found.size(), Math.max(0,total-found.size()), newDevices.get(), existingDevices.get(), 0, null), "discovery.idle");
+            }
+            long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+            int failed = Math.max(0, config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS).size() - found.size());
+            backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.completed", 100,
+                    config.subnet().hosts(com.netmoni.agent.config.Ipv4Cidr.MAX_SCAN_HOSTS).size(), found.size(), failed,
+                    newDevices.get(), existingDevices.get(), duration, null), "discovery.idle");
+            monitorDevices();
+            logger.info("Dashboard scan {} completed: {} reachable device(s)", scanId, found.size());
+        } catch (Exception exception) {
+            try { backend.send(ProtocolMessages.discoveryEvent(mapper, config.agentId(), scanId, "discovery.failed", 0, 0, 0, 0, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt), exception.getMessage()), "discovery.idle"); }
+            catch (IOException reportError) { logger.warn("Could not report failed scan {}: {}", scanId, reportError.getMessage()); }
+            logger.warn("Dashboard scan {} failed: {}", scanId, exception.getMessage());
+        } finally { discoveryRunning.set(false); }
     }
 
     static int mergeDeviceMappings(com.netmoni.agent.config.Ipv4Cidr subnet, Map<String, UUID> deviceIds,

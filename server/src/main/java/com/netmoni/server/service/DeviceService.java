@@ -63,6 +63,7 @@ public class DeviceService {
 			String hostname = clean(entry.getValue().hostname());
 			if (hostname != null && hostname.length() > 253) hostname = hostname.substring(0, 253);
 			Device device = devices.findByAgent_IdAndIpAddress(agentId, ip).orElse(null);
+			boolean created = device == null;
 			if (device == null) {
 				String name = hostname == null || hostname.length() > 120 ? ip : hostname;
 				device = new Device(null, name, ip, hostname, "UNKNOWN", null, agent);
@@ -73,7 +74,7 @@ public class DeviceService {
 				device = devices.save(device);
 				changed = true;
 			}
-			registered.add(new DiscoveredDeviceResponse(ip, device.getId()));
+			registered.add(new DiscoveredDeviceResponse(ip, device.getId(), created));
 		}
 		if (changed) {
 			events.publish("/topic/devices", "device.discovered", registered);
