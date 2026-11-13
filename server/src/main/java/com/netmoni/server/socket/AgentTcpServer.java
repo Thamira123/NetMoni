@@ -30,6 +30,7 @@ import com.netmoni.server.service.AgentNotFoundException;
 import com.netmoni.server.service.AgentRegistrationService;
 import com.netmoni.server.service.MonitoringResultService;
 import com.netmoni.server.dto.monitoring.MonitoringResultRequest;
+import com.netmoni.server.service.DeviceService;
 
 @Component
 public class AgentTcpServer {
@@ -39,6 +40,7 @@ public class AgentTcpServer {
 	private final ObjectMapper objectMapper;
 	private final AgentRegistrationService agentRegistrationService;
 	private final MonitoringResultService monitoringResultService;
+	private final DeviceService deviceService;
 	private final String host;
 	private final int port;
 	private final AtomicBoolean running = new AtomicBoolean(false);
@@ -49,11 +51,13 @@ public class AgentTcpServer {
 			ObjectMapper objectMapper,
 			AgentRegistrationService agentRegistrationService,
 			MonitoringResultService monitoringResultService,
+			DeviceService deviceService,
 			@Value("${netmoni.agent-server.host:127.0.0.1}") String host,
 			@Value("${netmoni.agent-server.port:9001}") int port) {
 		this.objectMapper = objectMapper;
 		this.agentRegistrationService = agentRegistrationService;
 		this.monitoringResultService = monitoringResultService;
+		this.deviceService = deviceService;
 		this.host = host;
 		this.port = port;
 	}
@@ -105,7 +109,7 @@ public class AgentTcpServer {
 		}
 	}
 
-	private AgentTcpResponse processMessage(AgentTcpMessage message) {
+	AgentTcpResponse processMessage(AgentTcpMessage message) {
 		if (message == null || message.type() == null) {
 			return AgentTcpResponse.error("message_type_is_required");
 		}
@@ -126,11 +130,19 @@ public class AgentTcpServer {
 				var result=monitoringResultService.submit(new MonitoringResultRequest(message.deviceId(),message.agentId(),message.checkType(),message.responseTimeMs(),Boolean.TRUE.equals(message.available()),message.packetLossPercent(),message.portNumber(),message.portOpen(),message.snmpData(),message.checkedAt(),message.errorMessage()));
 				return AgentTcpResponse.monitoringResult(message.agentId(),result.resultId());
 			}
+			if ("device.discovered".equals(message.type())) {
+				var devices = deviceService.registerDiscovered(message.agentId(), message.devices());
+				logger.info("Registered {} discovered device(s) for agent id={}", devices.size(), message.agentId());
+				return AgentTcpResponse.devicesRegistered(message.agentId(), devices);
+			}
 			return AgentTcpResponse.error("unsupported_message_type");
 		} catch (AgentNotFoundException exception) {
 			return AgentTcpResponse.error("agent_not_registered");
 		} catch (IllegalArgumentException exception) {
-			return AgentTcpResponse.error("invalid_agent_registration");
+			String error = "agent.register".equals(message.type()) ? "invalid_agent_registration"
+					: "device.discovered".equals(message.type()) ? "invalid_device_discovery"
+					: "invalid_monitoring_result";
+			return AgentTcpResponse.error(error);
 		} catch (RuntimeException exception) {
 			logger.error("Could not process agent TCP message type={}",message.type(),exception);
 			return AgentTcpResponse.error("message_processing_failed");

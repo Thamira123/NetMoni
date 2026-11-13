@@ -3,6 +3,7 @@ package com.netmoni.server.dto.agent;
 import java.util.UUID;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 public record AgentTcpMessage(
 		String type,
@@ -19,5 +20,6 @@ public record AgentTcpMessage(
 		Boolean portOpen,
 		String snmpData,
 		Instant checkedAt,
-		String errorMessage) {
+		String errorMessage,
+		List<DiscoveredDeviceRequest> devices) {
 }

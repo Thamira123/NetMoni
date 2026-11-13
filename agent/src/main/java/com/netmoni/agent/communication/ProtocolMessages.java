@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.netmoni.agent.config.AgentConfig;
 import com.netmoni.agent.model.MonitoringResult;
+import com.netmoni.agent.model.DiscoveredDevice;
+import java.util.List;
 import java.util.UUID;
 
 public final class ProtocolMessages {
@@ -24,6 +26,20 @@ public final class ProtocolMessages {
         ObjectNode message = mapper.createObjectNode();
         message.put("type", "agent.heartbeat");
         message.put("agentId", agentId.toString());
+        return message;
+    }
+
+    public static ObjectNode discoveredDevices(ObjectMapper mapper, UUID agentId, List<DiscoveredDevice> devices) {
+        ObjectNode message = mapper.createObjectNode();
+        message.put("type", "device.discovered");
+        message.put("agentId", agentId.toString());
+        var entries = message.putArray("devices");
+        for (DiscoveredDevice device : devices) {
+            var entry = entries.addObject();
+            entry.put("ipAddress", device.ipAddress());
+            if (device.hostname() != null) entry.put("hostname", device.hostname());
+            if (device.discoveredAt() != null) entry.put("discoveredAt", device.discoveredAt().toString());
+        }
         return message;
     }
 

@@ -15,6 +15,8 @@ import com.netmoni.agent.monitoring.tcp.TcpPortMonitor;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -40,9 +42,11 @@ public final class AgentRuntime implements AutoCloseable {
     private final AtomicBoolean discoveryRunning = new AtomicBoolean();
     private final AtomicBoolean monitoringRunning = new AtomicBoolean();
     private final AtomicBoolean outboxRunning = new AtomicBoolean();
+    private final Map<String, UUID> deviceIds = new ConcurrentHashMap<>();
 
     public AgentRuntime(AgentConfig config) throws IOException {
         this.config = config;
+        deviceIds.putAll(config.deviceIds());
         workers = Executors.newScheduledThreadPool(config.workerThreads());
         discoveryWorkers = Executors.newScheduledThreadPool(config.workerThreads());
         backend = new BackendClient(config.backendHost(), config.backendPort(),
@@ -76,6 +80,7 @@ public final class AgentRuntime implements AutoCloseable {
             backend.send(ProtocolMessages.registration(mapper, config), "agent.registered");
             registered.set(true);
             logger.info("Agent registration acknowledged by backend");
+            runDiscovery();
         } catch (IOException exception) {
             logger.warn("Agent registration failed; will retry: {}", exception.getMessage());
         }
@@ -92,11 +97,25 @@ public final class AgentRuntime implements AutoCloseable {
     }
 
     private void runDiscovery() {
+        if (!registered.get()) return;
         if (!discoveryRunning.compareAndSet(false, true)) return;
         workers.execute(() -> {
             try {
                 List<DiscoveredDevice> found = discovery.scan();
-                logger.info("Discovery found {} reachable device(s) in configured subnet", found.size());
+                if (found.isEmpty()) {
+                    logger.info("Discovery found no reachable devices in configured subnet");
+                    return;
+                }
+                JsonNode acknowledgement = backend.send(
+                        ProtocolMessages.discoveredDevices(mapper, config.agentId(), found),
+                        "device.discovery.accepted");
+                int registeredCount = mergeDeviceMappings(config.subnet(), deviceIds,
+                        acknowledgement.path("devices"));
+                logger.info("Discovery found {} reachable device(s); {} registered with backend",
+                        found.size(), registeredCount);
+                monitorDevices();
+            } catch (IOException exception) {
+                logger.warn("Could not register discovered devices; discovery will retry: {}", exception.getMessage());
             } catch (RuntimeException exception) {
                 logger.error("Network discovery failed", exception);
             } finally {
@@ -105,14 +124,31 @@ public final class AgentRuntime implements AutoCloseable {
         });
     }
 
+    static int mergeDeviceMappings(com.netmoni.agent.config.Ipv4Cidr subnet, Map<String, UUID> deviceIds,
+                                   JsonNode returnedDevices) throws IOException {
+        if (returnedDevices == null || !returnedDevices.isArray()) {
+            throw new IOException("Backend discovery acknowledgement is missing its device mappings");
+        }
+        int registeredCount = 0;
+        for (JsonNode device : returnedDevices) {
+            String ip = device.path("ipAddress").asText("");
+            String id = device.path("deviceId").asText("");
+            if (subnet.contains(ip) && !id.isBlank()) {
+                deviceIds.put(ip, UUID.fromString(id));
+                registeredCount++;
+            }
+        }
+        return registeredCount;
+    }
+
     private void monitorDevices() {
         if (!registered.get() || !monitoringRunning.compareAndSet(false, true)) return;
-        if (config.deviceIds().isEmpty()) {
+        if (deviceIds.isEmpty()) {
             monitoringRunning.set(false);
             return;
         }
-        AtomicInteger remaining = new AtomicInteger(config.deviceIds().size());
-        config.deviceIds().forEach((ip, deviceId) -> workers.execute(() -> {
+        AtomicInteger remaining = new AtomicInteger(deviceIds.size());
+        deviceIds.forEach((ip, deviceId) -> workers.execute(() -> {
             try {
                 monitorDevice(ip, deviceId);
             } catch (Exception exception) {

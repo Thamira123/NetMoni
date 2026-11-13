@@ -13,7 +13,7 @@ Keep PostgreSQL, the server, the frontend, and the agent running in separate ter
 
 Start the PostgreSQL Windows service and create a database named `netmoni`. The default local database settings are `localhost:5432`, user `postgres`; the backend script prompts for that user's password.
 
-The dashboard's device creation requires an ADMIN or OPERATOR account. For the first startup, open PowerShell in `server` and set a one-time bootstrap account before starting the backend:
+Public dashboard signup creates a read-only VIEWER account. Automatic discovery works without manually creating devices. To manage devices manually or administer accounts, create a one-time ADMIN account before the first backend startup by opening PowerShell in `server` and setting:
 
 ```powershell
 $env:BOOTSTRAP_ADMIN_ENABLED = 'true'
@@ -36,7 +36,7 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL, normally `http://localhost:5173`, and sign in using the bootstrap ADMIN account. Vite forwards `/api` requests and `/ws` WebSocket traffic to `http://localhost:8080`. The frontend uses the same REST API, JWT-authenticated STOMP connection, and database as the server.
+Open the Vite URL, normally `http://localhost:5173`, and either register a VIEWER account or sign in using the bootstrap ADMIN account. Vite forwards `/api` requests and `/ws` WebSocket traffic to `http://localhost:8080`. The frontend uses the same REST API, JWT-authenticated STOMP connection, and database as the server.
 
 ## 3. Register the agent
 
@@ -51,17 +51,13 @@ java -jar agent/target/netmoni-agent-1.0.0.jar agent/config/agent.properties
 
 The agent registers itself and sends heartbeats. It stores its generated ID under `agent/data`; keep that directory between restarts. Confirm the agent appears online in the dashboard's Agents view.
 
-## 4. Add a monitored device and connect it to the agent
+## 4. Confirm automatic registration and monitoring
 
-In the dashboard, open Devices, choose **Add device**, enter the device name, IPv4 address, type, and select the online agent. Save it. Open the device details and copy its Device ID.
+No dashboard device entry or UUID copy is needed for devices the agent discovers. After it registers, the agent scans its configured subnet, sends reachable IPv4 addresses and hostnames to the server, and receives the database device UUIDs. The server stores each `(agent, IP)` once and sends a WebSocket event; the open dashboard refreshes its Devices view. The agent then submits ICMP/TCP results using those returned IDs. Devices start as `UNKNOWN` and change to `ONLINE` or `OFFLINE` after the first check.
 
-Stop the agent with `Ctrl+C`. Edit the private `agent/config/agent.properties` file and set `agent.device-ids` to the device IP and copied UUID:
+The scan uses ICMP reachability and tries the configured `agent.tcp.ports` if ICMP is blocked. Set `agent.segment-cidr` to the correct IPv4 network on an active interface; only scan networks you administer. Discovery is capped at 4096 usable IPv4 addresses per scan. The agent repeats discovery at `agent.discovery.interval-seconds` (default 300), so newly reachable devices appear on a later scan.
 
-```properties
-agent.device-ids=192.168.1.10=replace-with-the-device-uuid
-```
-
-Replace both example values with the actual device IP and Device ID. If monitoring more than one device, use comma-separated `IP=UUID` entries. Start the agent again with the command above. The agent sends checks over TCP, the server validates the agent/device association and writes results to PostgreSQL, and the dashboard receives live updates over WebSocket.
+The optional `agent.device-ids` setting remains available for pre-existing devices. Its comma-separated `IP=UUID` entries are merged with automatically returned IDs. See [the wire protocol](agent-protocol.md) for the discovery request and acknowledgement.
 
 ## Connection settings
 

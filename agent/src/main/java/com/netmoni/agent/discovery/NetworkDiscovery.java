@@ -4,6 +4,8 @@ import com.netmoni.agent.config.AgentConfig;
 import com.netmoni.agent.model.DiscoveredDevice;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.UnknownHostException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -49,7 +51,7 @@ public final class NetworkDiscovery {
     private DiscoveredDevice probe(String ip) {
         try {
             InetAddress address = InetAddress.getByName(ip);
-            if (!address.isReachable(config.icmpTimeoutMs())) {
+            if (!address.isReachable(config.icmpTimeoutMs()) && !hasOpenConfiguredPort(ip)) {
                 return null;
             }
             String hostname = address.getCanonicalHostName();
@@ -61,5 +63,18 @@ public final class NetworkDiscovery {
             logger.debug("Could not discover {}: {}", ip, exception.getMessage());
             return null;
         }
+    }
+
+    private boolean hasOpenConfiguredPort(String ip) {
+        int probeTimeoutMs = Math.min(config.connectTimeoutMs(), 300);
+        for (int port : config.tcpPorts()) {
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress(ip, port), probeTimeoutMs);
+                return true;
+            } catch (IOException ignored) {
+                // ICMP may be blocked; a configured reachable TCP service still identifies the host.
+            }
+        }
+        return false;
     }
 }

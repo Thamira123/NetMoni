@@ -15,12 +15,13 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 @Entity
 @Table(name = "devices", indexes = {
 		@Index(name = "idx_devices_agent_id", columnList = "agent_id"),
 		@Index(name = "idx_devices_status", columnList = "status")
-})
+}, uniqueConstraints = @UniqueConstraint(name = "uk_devices_agent_ip_address", columnNames = {"agent_id", "ip_address"}))
 public class Device {
 	@Id
 	private UUID id;
@@ -67,6 +68,9 @@ public class Device {
 	public void update(String name, String ipAddress, String hostname, String deviceType, String location, Agent agent) {
 		this.name = name; this.ipAddress = ipAddress; this.hostname = hostname;
 		this.deviceType = deviceType; this.location = location; this.agent = agent;
+	}
+	public void updateDiscoveredHostname(String hostname) {
+		if (hostname != null && !hostname.isBlank()) this.hostname = hostname;
 	}
 	public void updateStatus(DeviceStatus status) { this.status = status; }
 	public UUID getId() { return id; }

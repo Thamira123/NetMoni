@@ -32,6 +32,22 @@ The server creates or updates that agent and replies:
 
 The server replies with `type: "agent.heartbeat.accepted"` and the current status. A heartbeat for an unknown ID returns `agent_not_registered`; register first. If no heartbeat is received within the configured `AGENT_HEARTBEAT_TIMEOUT_SECONDS` (default 90), the server marks the agent offline and emits a WebSocket event.
 
+## Register discovered devices
+
+After registration and after each subnet scan, the agent sends the reachable IPv4 devices in one batch:
+
+```json
+{"type":"device.discovered","agentId":"1e36fb24-0a57-4cdf-87b0-90f3ba3e9f17","devices":[{"ipAddress":"192.168.1.20","hostname":"printer-20","discoveredAt":"2026-11-13T12:00:00Z"}]}
+```
+
+The server accepts only addresses inside the CIDR registered by that agent. It creates or updates one device per `(agentId, ipAddress)` and replies with the stable device IDs:
+
+```json
+{"type":"device.discovery.accepted","agentId":"1e36fb24-0a57-4cdf-87b0-90f3ba3e9f17","status":"ONLINE","message":null,"resultId":null,"devices":[{"ipAddress":"192.168.1.20","deviceId":"b861d57f-42e0-4834-808a-3bd51a56293a"}]}
+```
+
+Repeated scans are idempotent. New devices are stored in PostgreSQL with status `UNKNOWN` until their first monitoring result changes them to `ONLINE` or `OFFLINE`. The server emits a device WebSocket event so the dashboard refreshes immediately. The agent uses the returned IDs for subsequent monitoring messages; `agent.device-ids` is optional and only seeds mappings for existing devices.
+
 Example acknowledgement:
 
 ```json
@@ -44,7 +60,7 @@ Example acknowledgement:
 {"type":"monitoring.result","agentId":"1e36fb24-0a57-4cdf-87b0-90f3ba3e9f17","deviceId":"b861d57f-42e0-4834-808a-3bd51a56293a","checkType":"ICMP","responseTimeMs":12,"available":true,"packetLossPercent":0.0,"checkedAt":"2026-11-12T12:00:00Z"}
 ```
 
-Optional fields include `portNumber`, `portOpen`, `snmpData`, and `errorMessage`. The agent uses `checkType` values `ICMP`, `TCP`, and `SNMP`; `snmpData` is a JSON-encoded string containing the returned OID/value pairs. The device must already exist and be assigned to the sending agent. Acknowledgement includes the stored `resultId`:
+Optional fields include `portNumber`, `portOpen`, `snmpData`, and `errorMessage`. The agent uses `checkType` values `ICMP`, `TCP`, and `SNMP`; `snmpData` is a JSON-encoded string containing the returned OID/value pairs. The device ID comes from the discovery acknowledgement and must be assigned to the sending agent. Acknowledgement includes the stored `resultId`:
 
 ```json
 {"type":"monitoring.result.accepted","agentId":"1e36fb24-0a57-4cdf-87b0-90f3ba3e9f17","status":"ONLINE","message":null,"resultId":"b861d57f-42e0-4834-808a-3bd51a56293a"}
@@ -54,7 +70,7 @@ Device and monitoring WebSocket updates are emitted after processing. Delivery i
 
 ## Device discovery and security boundaries
 
-The TCP protocol does not register discovered devices. The agent discovers reachable IPs and reverse-DNS hostnames locally, but monitoring results can only be sent for device UUIDs that already exist and are assigned to that agent. Automatic discovery-to-dashboard integration needs a coordinated backend message or endpoint that creates/assigns a device and returns its UUID. The current result DTO also does not expose local MAC/interface identity or normalized SNMP interface metrics.
+The agent discovers reachable IPs and reverse-DNS hostnames and registers them with `device.discovered`. The server validates the addresses against the agent's registered subnet, stores devices idempotently, and returns the UUIDs used for monitoring results. The current result DTO does not expose local MAC/interface identity or normalized SNMP interface metrics.
 
 TLS and agent authentication are not implemented by the backend. The current listener defaults to loopback (`127.0.0.1:9001`); the agent must not connect across an untrusted network until both sides implement and verify the same TLS/authentication contract.
 
